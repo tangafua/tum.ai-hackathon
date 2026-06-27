@@ -1,0 +1,15 @@
+# Core (already present in /opt/miniconda3 base env on this machine)
+torch>=2.2          # MPS/CUDA ok
+numpy>=1.24
+scipy>=1.10         # sqrtm for FID; voronoi
+shapely>=2.0        # room/outline geometry, voronoi_diagram, MRR
+scikit-learn>=1.2   # pairwise distances for prdc
+pillow>=9           # rasterization
+
+# Official challenge metrics (sample_eval.py --inception), in the SUBMISSION env:
+#   FID      = torchmetrics.image.fid.FrechetInceptionDistance
+#   Density/Coverage = clovaai/generative-evaluation-prdc (vendored in prdc.py)
+#   render   = MSD plot.py convention (matplotlib; CMAP_ROOMTYPE on black)
+# pip install torchmetrics torch-fidelity torchvision
+# (this laptop's torch 2.12 has no matching torchvision build -> use the phi-proxy here)
+matplotlib>=3.5     # render_msd (faithful MSD renderer)
