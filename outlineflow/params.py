@@ -146,7 +146,7 @@ def compute_stats(samples, cfg) -> np.ndarray:
 # ---------------------------------------------------------------- encode / decode
 def build_x1(rooms, outline, stats, cfg, rng=None) -> np.ndarray:
     """List of (cx,cy,w,h,theta,type) + outline -> token tensor x1 [n_max, D]."""
-    rng = rng or np.random.default_rng()
+    rng = rng if rng is not None else np.random.default_rng(42)  # deterministic fallback
     bx0, by0, bw, bh = outline_bbox(outline)
     mean, std = stats[0], stats[1]
     D = cfg.d

@@ -97,7 +97,10 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str = "voronoi",
 
     OUT = params.sample_outline_points(outline, CFG.p_outline)[None]   # [1,P,4]
     Ot = torch.from_numpy(OUT).to(device)
-    x = sample(model, Ot, CFG)[0].cpu().numpy()                        # [n_max,D]
+    # dedicated CPU generator so identical (outline, seed) -> identical rooms,
+    # independent of the load_model cache / global-RNG consumption (brief: seed 42).
+    gen = torch.Generator().manual_seed(int(seed))
+    x = sample(model, Ot, CFG, generator=gen)[0].cpu().numpy()         # [n_max,D]
     rooms = decode(x, outline, stats, CFG, presence_thresh=presence_thresh)
     return [(poly, int(t)) for poly, t in rooms]
 
@@ -164,10 +167,25 @@ def main():
 
     # render a PNG (outline | [real] | generated) for a quick visual check
     os.makedirs(args.out, exist_ok=True)
-    from render import render_plan
-    from PIL import Image
+    from render import render_plan, _transform
+    from PIL import Image, ImageDraw
+
+    def render_outline_panel(outline, cfg, color=(210, 210, 210)):
+        """The condition panel: the bare outline filled in light grey on black."""
+        f = _transform(params.outline_bbox(outline), cfg.canvas)
+        img = Image.new("RGB", (cfg.canvas, cfg.canvas), (0, 0, 0))
+        d = ImageDraw.Draw(img)
+        polys = outline.geoms if outline.geom_type == "MultiPolygon" else [outline]
+        for g in polys:
+            if g.is_empty:
+                continue
+            d.polygon(f(list(g.exterior.coords)), fill=color)
+            for ring in g.interiors:
+                d.polygon(f(list(ring.coords)), fill=(0, 0, 0))
+        return np.asarray(img, dtype=np.uint8)
+
     gi = render_plan(rooms, outline, CFG)
-    panels = [render_plan([(outline, 9)], outline, CFG)]  # outline as 'Structure' fill
+    panels = [render_outline_panel(outline, CFG)]   # condition: the bare outline
     if real_rooms is not None:
         panels.append(render_plan(real_rooms, outline, CFG))
     panels.append(gi)

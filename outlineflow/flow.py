@@ -41,12 +41,23 @@ def fm_loss(model, x1, outline, cfg):
 
 
 @torch.no_grad()
-def sample(model, outline, cfg, steps=None, heun_last=5):
-    """Integrate the velocity field from noise (t=0) to data (t=1)."""
+def sample(model, outline, cfg, steps=None, heun_last=5, generator=None):
+    """Integrate the velocity field from noise (t=0) to data (t=1).
+
+    Pass ``generator`` (a torch.Generator) to make the initial noise -- and hence
+    the whole sample -- reproducible INDEPENDENTLY of how much global RNG model
+    construction / caching consumed.  generate() uses this so identical
+    (outline, seed) always yields identical room polygons (brief: fixed seed 42).
+    """
     steps = steps or cfg.sample_steps
     B = outline.shape[0]
     dev = outline.device
-    x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
+    if generator is not None:
+        # draw on the generator's device (CPU generator -> CPU noise), then move
+        x = torch.randn(B, cfg.n_max, cfg.d, generator=generator,
+                        device=generator.device).to(dev)
+    else:
+        x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
     dt = 1.0 / steps
     for i in range(steps):
         t = torch.full((B,), i * dt, device=dev)
