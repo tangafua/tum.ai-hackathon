@@ -80,3 +80,20 @@ sample contract and the brief's outline formula.
 vendored clovaai `prdc` sharing the same Inception features. A numpy-only `phi`
 proxy reproduces the whole pipeline with zero extra installs, behind a sanity gate
 (real-vs-real ⇒ FID≈0/D≈1/C≈1; noise ⇒ large/0/0).
+
+### Self-reported scores (no official harness; we evaluate ourselves)
+
+Held-out set (seed 42, `rect` decoder, count-calibrated, n=400, metrics on CPU).
+**Harness validity check:** real-vs-real = FID 0.00 / D 1.00 / C 1.00 for both.
+
+| Grouping | train / held | FID ↓ | Density ↑ | Coverage ↑ |
+|---|---|---|---|---|
+| `unit_id` (per apartment) | 2367 / 591 | **129.2** | 0.044 | 0.035 |
+| `plan_id` (per floor, brief default) | ~1600 / 400 | **190.5** | 0.052 | 0.060 |
+
+Reproduce: `python sample_eval.py --out_dir <ckpt_dir> --n_eval 400 --inception`.
+Caveats: trained on a data SUBSET (`--msd_limit`); absolute FID depends on the exact
+rasterization (we use canvas 256, MSD palette on black) so it shifts under a
+different render protocol — but the harness is internally valid (real-vs-real ≈ 0).
+Density/Coverage are low (the generator covers only part of the real diversity);
+generating multiple samples per outline and training on the full set are the levers.

@@ -8,10 +8,14 @@ pillow>=9           # rasterization
 pandas>=1.5         # read the MSD CSV (mds_V2_5.372k.csv)
 geopandas>=0.12     # optional: generate_geodataframe() / brief-style room frames
 
-# Official challenge metrics (sample_eval.py --inception), in the SUBMISSION env:
-#   FID      = torchmetrics.image.fid.FrechetInceptionDistance
-#   Density/Coverage = clovaai/generative-evaluation-prdc (vendored in prdc.py)
+# Official challenge metrics (sample_eval.py --inception):
+#   FID      = torchmetrics.image.fid.FrechetInceptionDistance (2048-d)
+#   Density/Coverage = clovaai/generative-evaluation-prdc (vendored in prdc.py), k=5
 #   render   = MSD plot.py convention (matplotlib; CMAP_ROOMTYPE on black)
-# pip install torchmetrics torch-fidelity torchvision
-# (this laptop's torch 2.12 has no matching torchvision build -> use the phi-proxy here)
+# pip install torchmetrics torch-fidelity torchvision pytorch-fid
+# VERIFIED working with torch 2.12 + torchvision 0.27.1 (run metrics on CPU: MPS lacks float64).
 matplotlib>=3.5     # render_msd (faithful MSD renderer)
+torchmetrics>=1.0   # FID
+torch-fidelity      # torchmetrics FID backend
+torchvision>=0.19   # InceptionV3 for FID features
+pytorch-fid         # alt InceptionV3 feature path

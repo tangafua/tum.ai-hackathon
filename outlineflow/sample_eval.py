@@ -58,6 +58,8 @@ def main():
     CFG.out_dir = args.out_dir
     CFG.device = args.device
     dev = args.device
+    # FID/Inception use float64 covariance accumulators -> MPS can't; run metrics on CPU
+    metric_dev = "cpu" if dev == "mps" else dev
     ckpt_path = args.ckpt or f"{CFG.out_dir}/ckpt.pt"
     held_path = args.held or f"{CFG.out_dir}/held.pkl"
 
@@ -124,10 +126,10 @@ def main():
         from render import render_msd
         real_imgs = np.stack([render_msd(r, o, CFG) for r, o in real_plans])
         gen_imgs = np.stack([render_msd(r, o, CFG) for r, o in gen_plans])
-        rr = metrics.official_eval(real_imgs, real_imgs.copy(), CFG, device=dev)
+        rr = metrics.official_eval(real_imgs, real_imgs.copy(), CFG, device=metric_dev)
         print(f"  [sanity] real-vs-real (official): FID={rr['fid']:.3f} "
               f"D={rr['density']:.3f} C={rr['coverage']:.3f}  (expect ~0, ~1, ~1)")
-        sc = metrics.official_eval(real_imgs, gen_imgs, CFG, device=dev)
+        sc = metrics.official_eval(real_imgs, gen_imgs, CFG, device=metric_dev)
     else:
         real_f = metrics.phi_features(real_plans, CFG)
         gen_f = metrics.phi_features(gen_plans, CFG)
