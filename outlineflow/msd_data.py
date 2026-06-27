@@ -1,4 +1,4 @@
-"""MSD (Modified Swiss Dwellings / cvaad-challenge) data hook.
+"""MSD (Modified Swiss Dwellings) real-data hook -- reads the OFFICIAL CSV.
 
 This is the ONLY file that touches real data.  It produces the SAME sample
 contract as synth_data.py:
@@ -8,118 +8,178 @@ contract as synth_data.py:
 
 so train.py / sample_eval.py / render.py / metrics.py are UNCHANGED.
 
-Dataset layout (from the official usage notebook), per integer plan id:
-    struct_in/{id}.npy   structural/wall components: ch0 binary + ch1,2 = x,y (m)
-    graph_out/{id}.pickle networkx graph; each node has
-                          'geometry' (polygon coords), 'room_type' (int), 'centroid'
+Data source (per the challenge brief):
+    mds_V2_5.372k.csv   one row per entity.  The VECTOR modality lives here, in
+                        the `geom` column (WKT) -- NOT in the struct_in / graph_in /
+                        graph_out / full_out folders, which this task does not use.
+        entity_type == 'area'   selects the room/space polygons for a plan
+        roomtype                room class name  (Bedroom / Kitchen / ... / Structure)
+        plan_id                 a whole building FLOOR (may hold several apartments)
+        unit_id                 a single APARTMENT
 
-We build the apartment OUTLINE as the union of the room polygons (the footprint)
--- replace with the organizers' provided outline snippet when available.
+OUTLINE -- built from the rooms by the brief's provided formula (verbatim):
+    buffer each room out by 0.3 m, unary_union, then buffer back in by 0.3 m,
+    fusing the rooms into one exterior shell.  This is the model's ONLY condition.
 
-IMPORTANT: do NOT download the whole dataset.  Point --data_dir at a small local
-subset, or stream a handful of plans.  `load_msd_samples(..., limit=N)` reads at
-most N plans.
+GROUPING -- the brief appendix groups by `plan_id` (and the organizers score on a
+held-out set of *plans*), so that is the default.  `unit_id` gives per-apartment
+plans (~8 rooms vs ~31) and is selectable with --group unit_id.
+
+NOTE: the CSV is large (~400 MB).  `load_msd_samples(..., limit=N)` reads only N
+plans' geometry, so you never need to materialize the whole dataset.
 """
 from __future__ import annotations
-import os
-import glob
-import pickle
 import numpy as np
-from shapely.geometry import Polygon
+from shapely import wkt
+from shapely.geometry import Polygon, MultiPolygon
 from shapely.ops import unary_union
 
 import params
+from cfg import ROOM_NAMES
+
+# roomtype name -> class id == index into cfg.ROOM_NAMES / PALETTE (locked taxonomy).
+# The 10 MSD 'area' roomtypes all land in ROOM_NAMES[0..9]; K stays 13 so the
+# render palette is identical for synthetic, real, and generated plans.
+ROOMTYPE_TO_ID = {name: i for i, name in enumerate(ROOM_NAMES)}
+WALL_BRIDGE = 0.3   # metres -- the brief's outline buffer distance
 
 
-def _load_pickle(p):
-    with open(p, "rb") as f:
-        return pickle.load(f)
+def _as_polygon(geom):
+    """WKT/shapely geom -> a single valid Polygon (largest piece), or None."""
+    if isinstance(geom, str):
+        try:
+            geom = wkt.loads(geom)
+        except Exception:
+            return None
+    if geom is None or geom.is_empty:
+        return None
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+    if geom.geom_type == "MultiPolygon":
+        geom = max(geom.geoms, key=lambda g: g.area) if not geom.is_empty else geom
+    if geom.geom_type != "Polygon" or geom.is_empty or geom.area <= 0:
+        return None
+    return geom
 
 
-def load_msd_plan(graph_out_path, type_map=None):
-    """One graph_out/{id}.pickle -> sample dict (or None if unusable)."""
-    g = _load_pickle(graph_out_path)
+def build_outline(room_polys, wall_bridge: float = WALL_BRIDGE):
+    """The brief's outline-construction formula, verbatim.
+
+    rooms.buffer(+0.3).unary_union.buffer(-0.3) -> one exterior shell.
+    Returns a Polygon (or MultiPolygon for disconnected floors); params /
+    postprocess / render all handle MultiPolygon outlines.
+    """
+    geoms = [p for p in room_polys if p is not None and not p.is_empty]
+    if not geoms:
+        return None
+    outline = unary_union([g.buffer(wall_bridge) for g in geoms]).buffer(-wall_bridge)
+    if outline.is_empty or outline.area <= 0:
+        return None
+    if not outline.is_valid:
+        outline = outline.buffer(0)
+    return outline
+
+
+def _build_sample(rows_geom, rows_type):
+    """(list[WKT geom], list[roomtype str]) -> sample dict, or None if unusable."""
     room_polys, rooms = [], []
-    for _, data in g.nodes(data=True):
-        if "geometry" not in data or "room_type" not in data:
+    for g, rt in zip(rows_geom, rows_type):
+        poly = _as_polygon(g)
+        if poly is None:
             continue
-        coords = data["geometry"]
-        poly = Polygon(coords)
-        if not poly.is_valid:
-            poly = poly.buffer(0)
-        if poly.is_empty or poly.area <= 0:
+        t = ROOMTYPE_TO_ID.get(str(rt))
+        if t is None:                       # unknown class -> skip (keeps taxonomy clean)
             continue
-        raw_t = int(data["room_type"])
-        t = type_map[raw_t] if type_map is not None else raw_t
-        if poly.geom_type == "MultiPolygon":
-            poly = max(poly.geoms, key=lambda z: z.area)
         room_polys.append((poly, t))
         cx, cy, w, h, theta = params.mrr_params(poly)
         rooms.append((cx, cy, w, h, theta, t))
-    if not rooms:
+    if len(rooms) < 2:
         return None
-    outline = unary_union([p for p, _ in room_polys]).buffer(0)
-    if outline.geom_type == "MultiPolygon":
-        outline = max(outline.geoms, key=lambda z: z.area)
+    outline = build_outline([p for p, _ in room_polys])
+    if outline is None:
+        return None
     return dict(outline=outline, rooms=rooms, room_polys=room_polys)
 
 
-def build_type_vocab(graph_paths):
-    """Scan graphs -> {raw_room_type_int: contiguous_id}.  Sets K = len(vocab)."""
-    seen = set()
-    for p in graph_paths:
-        g = _load_pickle(p)
-        for _, d in g.nodes(data=True):
-            if "room_type" in d:
-                seen.add(int(d["room_type"]))
-    vocab = {t: i for i, t in enumerate(sorted(seen))}
-    return vocab
+def load_msd_samples(csv_path, cfg, limit=None, group=None, set_cfg=True,
+                     residential_only=None, seed=None):
+    """Read up to `limit` plans from the MSD CSV -> list of sample dicts.
 
-
-def load_msd_samples(data_dir, cfg, limit=None, set_cfg=True):
-    """Read up to `limit` plans from <data_dir>/graph_out/*.pickle.
-
-    If set_cfg, updates cfg.k (type count) and cfg.n_max (99th pct room count)
-    from the data, and returns (samples, vocab).
+    group : "plan_id" (default, brief) or "unit_id" (per-apartment).
+    If set_cfg, updates cfg.n_max (99th-pct room count + margin) from the data
+    and records cfg.msd_group; cfg.k stays fixed at the locked taxonomy size.
+    Returns (samples, ROOMTYPE_TO_ID).
     """
-    graph_dir = os.path.join(data_dir, "graph_out")
-    paths = sorted(glob.glob(os.path.join(graph_dir, "*.pickle")))
-    if not paths:
-        raise FileNotFoundError(
-            f"No graph_out/*.pickle under {data_dir}. Point --data_dir at a local "
-            f"MSD/cvaad-challenge subset (do NOT download the full dataset).")
+    import pandas as pd
+    group = group or cfg.msd_group
+    residential_only = (cfg.msd_residential_only if residential_only is None
+                        else residential_only)
+    seed = cfg.seed if seed is None else seed
+    if group not in ("plan_id", "unit_id"):
+        raise ValueError(f"group must be 'plan_id' or 'unit_id', got {group!r}")
+
+    usecols = [group, "entity_type", "roomtype", "geom"]
+    if residential_only:
+        usecols.append("unit_usage")
+    print(f"[msd] reading {csv_path} (group={group}, residential_only={residential_only})...")
+    df = pd.read_csv(csv_path, usecols=usecols)
+    df = df[df["entity_type"] == "area"]
+    if residential_only:
+        df = df[df["unit_usage"] == "RESIDENTIAL"]
+    df = df.dropna(subset=[group])
+
+    keys = np.sort(df[group].unique())
+    rng = np.random.default_rng(seed)
+    keys = rng.permutation(keys)            # seeded, reproducible subset choice
     if limit:
-        paths = paths[:limit]
-    vocab = build_type_vocab(paths)
+        keys = keys[:limit]
+    keep = set(keys.tolist())
+    df = df[df[group].isin(keep)]
+
     samples = []
-    for p in paths:
-        s = load_msd_plan(p, type_map=vocab)
+    for _, grp in df.groupby(group, sort=True):
+        s = _build_sample(grp["geom"].tolist(), grp["roomtype"].tolist())
         if s is not None:
             samples.append(s)
+
+    if not samples:
+        raise RuntimeError(
+            f"No usable plans parsed from {csv_path} (group={group}). "
+            f"Check the CSV has entity_type=='area' rows with WKT `geom`.")
+
     if set_cfg:
         counts = np.array([len(s["rooms"]) for s in samples])
-        cfg.k = max(len(vocab), 1)
-        cfg.n_max = int(np.quantile(counts, 0.99)) + 2
-        print(f"[msd] {len(samples)} plans | K={cfg.k} | n_max={cfg.n_max} "
-              f"| rooms/plan {counts.mean():.1f}±{counts.std():.1f} "
-              f"(max {counts.max()})")
-    return samples, vocab
+        cfg.msd_group = group
+        # n_max from the room-count tail (+margin), capped so attention stays cheap
+        cfg.n_max = int(min(np.quantile(counts, 0.99) + 4, 200))
+        # generatable classes = the 'area' roomtypes actually present (0..max), so
+        # decoding never emits Door/Window/Entrance-Door (10-12).
+        max_t = max(t for s in samples for (*_, t) in s["rooms"])
+        cfg.n_gen_classes = int(max_t) + 1
+        print(f"[msd] {len(samples)} plans | K={cfg.k} | n_gen_classes={cfg.n_gen_classes} "
+              f"| n_max={cfg.n_max} | rooms/plan {counts.mean():.1f}±{counts.std():.1f} "
+              f"(median {np.median(counts):.0f}, max {counts.max()})")
+    return samples, ROOMTYPE_TO_ID
 
 
 if __name__ == "__main__":
     import argparse
     from cfg import CFG
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data_dir", required=True,
-                    help="local MSD/cvaad-challenge split dir (with graph_out/)")
-    ap.add_argument("--limit", type=int, default=50)
+    ap.add_argument("--data_csv", required=True, help="path to mds_V2_5.372k.csv")
+    ap.add_argument("--group", choices=["plan_id", "unit_id"], default=CFG.msd_group)
+    ap.add_argument("--limit", type=int, default=200)
+    ap.add_argument("--residential_only", action="store_true")
     args = ap.parse_args()
-    samples, vocab = load_msd_samples(args.data_dir, CFG, limit=args.limit)
+
+    samples, vocab = load_msd_samples(args.data_csv, CFG, limit=args.limit,
+                                      group=args.group,
+                                      residential_only=args.residential_only)
     stats = params.compute_stats(samples, CFG)
     print("stats mean:", stats[0].round(3), "std:", stats[1].round(3))
-    print("vocab (raw_room_type -> id):", vocab)
-    # MRR fidelity: how rectangular are real rooms?
-    from shapely import area
+    multipoly = sum(s["outline"].geom_type == "MultiPolygon" for s in samples)
+    print(f"outline MultiPolygon plans: {multipoly}/{len(samples)}")
+    # MRR fidelity: how rectangular are real rooms? (high frac<0.8 -> prefer voronoi)
     ious = []
     for s in samples:
         for (poly, t), (cx, cy, w, h, th, _t) in zip(s["room_polys"], s["rooms"]):
@@ -131,5 +191,4 @@ if __name__ == "__main__":
     ious = np.array(ious)
     print(f"MRR-IoU vs true room polygons: mean {ious.mean():.3f}, "
           f"frac<0.8 {(ious < 0.8).mean():.3f} "
-          f"(high frac<0.8 -> rooms are non-rectangular; prefer voronoi decoder "
-          f"or the 2-rects-per-room extension)")
+          f"(high -> rooms are non-rectangular; prefer the voronoi decoder)")

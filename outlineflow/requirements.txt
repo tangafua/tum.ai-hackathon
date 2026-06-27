@@ -5,6 +5,8 @@ scipy>=1.10         # sqrtm for FID; voronoi
 shapely>=2.0        # room/outline geometry, voronoi_diagram, MRR
 scikit-learn>=1.2   # pairwise distances for prdc
 pillow>=9           # rasterization
+pandas>=1.5         # read the MSD CSV (mds_V2_5.372k.csv)
+geopandas>=0.12     # optional: generate_geodataframe() / brief-style room frames
 
 # Official challenge metrics (sample_eval.py --inception), in the SUBMISSION env:
 #   FID      = torchmetrics.image.fid.FrechetInceptionDistance

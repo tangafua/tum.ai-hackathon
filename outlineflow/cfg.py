@@ -9,6 +9,9 @@ scores are valid even if absolute FID differs from theirs).
 """
 from dataclasses import dataclass, field
 from typing import List, Tuple
+import os
+import random
+import numpy as np
 import torch
 
 
@@ -18,6 +21,21 @@ def pick_device() -> str:
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
+
+
+def seed_everything(seed: int = 42) -> None:
+    """Fix every RNG the pipeline touches.
+
+    The challenge brief mandates a FIXED seed of 42 throughout data, training,
+    sampling and evaluation so results are reproducible / comparable across teams.
+    Call this once at the top of every entry point (train / sample_eval / generate).
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 # Room taxonomy + colors are LOCKED to the official MSD repo
@@ -55,8 +73,13 @@ UNASSIGNED_COLOR = (0, 0, 0)  # uncovered interior reads as wall/black, as in MS
 class Config:
     # --- parameterization (params.py is the single source of truth for ORDER) ---
     n_max: int = 16          # max rooms per plan (set from MSD room-count 99th pct later)
-    k: int = 13              # room-class count = len(ROOM_NAMES) (MSD)
+    k: int = 13              # room-class count = len(ROOM_NAMES) (MSD); locked palette width
     n_synth_classes: int = 9  # synthetic rooms use the 9 dwelling classes (0-8)
+    # Only the first n_gen_classes type channels are generatable: synthetic uses 0-8 (9);
+    # real MSD 'area' rooms use 0-9 (10, incl. Structure). Decoding argmaxes over these
+    # so the model can NEVER emit Door/Window/Entrance-Door (10-12), which are openings,
+    # not 'area' rooms. Set from data in msd_data; persisted in the checkpoint.
+    n_gen_classes: int = 9
     p_outline: int = 128     # boundary points sampled for the outline encoder
 
     # channel layout (DO NOT reorder without updating params.py):
@@ -97,7 +120,11 @@ class Config:
     n_held: int = 1000
     min_rooms: int = 3
     max_rooms: int = 8
-    seed: int = 0
+    seed: int = 42                # brief: fixed seed 42 throughout
+
+    # --- real MSD ---
+    msd_group: str = "plan_id"    # brief appendix groups by plan_id; "unit_id" = per-apartment
+    msd_residential_only: bool = False  # brief does not filter usage; keep all 'area' rooms
 
     # --- render / eval ---
     canvas: int = 256

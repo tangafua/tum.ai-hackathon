@@ -14,7 +14,7 @@ from PIL import Image
 
 import params
 import metrics
-from cfg import CFG
+from cfg import CFG, seed_everything
 from model import OutlineFlow
 from flow import EMA, sample
 from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap
@@ -23,8 +23,8 @@ from render import render_plan
 
 def load(ckpt_path):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    for k in ("n_max", "k", "p_outline", "d_model", "n_layers", "n_heads",
-              "mlp_ratio", "canvas", "nearest_k", "min_area_frac"):
+    for k in ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
+              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac"):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
@@ -36,8 +36,10 @@ def load(ckpt_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=f"{CFG.out_dir}/ckpt.pt")
-    ap.add_argument("--held", default=f"{CFG.out_dir}/held.pkl")
+    ap.add_argument("--out_dir", default=CFG.out_dir,
+                    help="dir holding ckpt.pt / held.pkl and where samples/ are written")
+    ap.add_argument("--ckpt", default=None)
+    ap.add_argument("--held", default=None)
     ap.add_argument("--n_eval", type=int, default=600)
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--device", default=CFG.device)
@@ -47,15 +49,20 @@ def main():
                     help="disable matching the generated room-count to the real mean")
     ap.add_argument("--decoder", choices=["voronoi", "rect"], default="voronoi",
                     help="voronoi: seed-partition tiling (clean); rect: raw boxes+gap-fill")
+    ap.add_argument("--seed", type=int, default=CFG.seed)
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
+    seed_everything(args.seed)               # brief: fixed seed 42 for sampling/eval
+    CFG.out_dir = args.out_dir
     CFG.device = args.device
     dev = args.device
+    ckpt_path = args.ckpt or f"{CFG.out_dir}/ckpt.pt"
+    held_path = args.held or f"{CFG.out_dir}/held.pkl"
 
-    model, stats = load(args.ckpt)
+    model, stats = load(ckpt_path)
     model = model.to(dev)
-    held = pickle.load(open(args.held, "rb"))[: args.n_eval]
+    held = pickle.load(open(held_path, "rb"))[: args.n_eval]
     outlines = [s["outline"] for s in held]
     print(f"[eval] {len(held)} held outlines | device={dev} | decoder={args.decoder} | "
           f"features={'inception' if args.inception else 'phi-proxy'}")

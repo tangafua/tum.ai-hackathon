@@ -68,33 +68,59 @@ def outline_bbox(outline: Polygon):
     return float(bx0), float(by0), float(bw), float(bh)
 
 
+def _exterior_rings(outline):
+    """Exterior ring(s) of a (Multi)Polygon outline, as a list of LinearRings.
+
+    A plan_id-level MSD outline (the brief's buffer(0.3)-union shell over a whole
+    floor) can be a MultiPolygon of disconnected apartments, so the outline encoder
+    must see the boundary of every piece -- not just the largest.
+    """
+    polys = outline.geoms if outline.geom_type == "MultiPolygon" else [outline]
+    return [p.exterior for p in polys if (not p.is_empty) and p.exterior.length > 0]
+
+
 def sample_outline_points(outline: Polygon, P: int) -> np.ndarray:
     """Sample P boundary points (arc-length) -> [P,4] = (x_n, y_n, nx, ny).
 
     x_n,y_n are normalized to the outline bbox in [-1,1]; (nx,ny) is the unit
     OUTWARD normal.  This is the only thing the model sees about the outline.
+    Handles MultiPolygon outlines by distributing the P points across every
+    exterior ring in proportion to its perimeter.
     """
     bx0, by0, bw, bh = outline_bbox(outline)
-    ext = outline.exterior
-    L = ext.length
-    ds = np.linspace(0.0, L, P, endpoint=False)
-    raw = np.array([(ext.interpolate(d).x, ext.interpolate(d).y) for d in ds])
+    rings = _exterior_rings(outline)
+    if not rings:                                  # degenerate fallback
+        return np.zeros((P, 4), dtype=np.float32)
+    lengths = np.array([r.length for r in rings], dtype=np.float64)
+    # integer point budget per ring (proportional, >=1 each, summing to P)
+    quota = np.maximum(1, np.floor(P * lengths / lengths.sum()).astype(int))
+    while quota.sum() < P:
+        quota[int(np.argmax(lengths / quota))] += 1
+    while quota.sum() > P:
+        quota[int(np.argmax(quota))] -= 1
+
     eps = 1e-6 * max(bw, bh)
     feats = np.zeros((P, 4), dtype=np.float32)
-    for i in range(P):
-        nxt = raw[(i + 1) % P]
-        prv = raw[(i - 1) % P]
-        tang = nxt - prv
-        n = np.hypot(tang[0], tang[1]) + 1e-12
-        # candidate normal (rotate tangent -90 deg)
-        cand = np.array([tang[1], -tang[0]]) / n
-        test = raw[i] + eps * 10 * cand
-        if outline.contains(Polygon(box(test[0] - eps, test[1] - eps,
-                                        test[0] + eps, test[1] + eps)).centroid):
-            cand = -cand  # pointed inward -> flip
-        x_n = 2.0 * (raw[i, 0] - bx0) / bw - 1.0
-        y_n = 2.0 * (raw[i, 1] - by0) / bh - 1.0
-        feats[i] = (x_n, y_n, cand[0], cand[1])
+    k = 0
+    for ring, q in zip(rings, quota):
+        L = ring.length
+        ds = np.linspace(0.0, L, q, endpoint=False)
+        raw = np.array([(ring.interpolate(d).x, ring.interpolate(d).y) for d in ds])
+        for i in range(q):
+            nxt = raw[(i + 1) % q]
+            prv = raw[(i - 1) % q]
+            tang = nxt - prv
+            n = np.hypot(tang[0], tang[1]) + 1e-12
+            # candidate normal (rotate tangent -90 deg)
+            cand = np.array([tang[1], -tang[0]]) / n
+            test = raw[i] + eps * 10 * cand
+            if outline.contains(Polygon(box(test[0] - eps, test[1] - eps,
+                                            test[0] + eps, test[1] + eps)).centroid):
+                cand = -cand  # pointed inward -> flip
+            x_n = 2.0 * (raw[i, 0] - bx0) / bw - 1.0
+            y_n = 2.0 * (raw[i, 1] - by0) / bh - 1.0
+            feats[k] = (x_n, y_n, cand[0], cand[1])
+            k += 1
     return feats
 
 
@@ -161,7 +187,10 @@ def decode_x1(x1: np.ndarray, outline, stats, cfg):
         w = max(float(g0[2] * bw), min_w)
         h = max(float(g0[3] * bh), min_h)
         theta = 0.5 * float(np.arctan2(tok[5], tok[6]))
-        ttype = int(np.argmax(tok[7:7 + cfg.k]))
+        # argmax only over GENERATABLE classes so we never emit non-'area' classes
+        # (Door/Window/Entrance-Door); falls back to k if n_gen_classes is unset.
+        n_cls = getattr(cfg, "n_gen_classes", 0) or cfg.k
+        ttype = int(np.argmax(tok[7:7 + n_cls]))
         out.append(dict(cx=cx, cy=cy, w=w, h=h, theta=theta, type=ttype,
                         presence=presence))
     out.sort(key=lambda r: r["presence"], reverse=True)

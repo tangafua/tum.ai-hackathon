@@ -17,7 +17,7 @@ import torch
 
 import params
 import synth_data
-from cfg import CFG
+from cfg import CFG, seed_everything
 from model import OutlineFlow, count_params
 from flow import fm_loss, EMA
 
@@ -37,31 +37,43 @@ def main():
     ap.add_argument("--batch_size", type=int, default=CFG.batch_size)
     ap.add_argument("--overfit", type=int, default=0,
                     help="if >0, train on this many samples (gate test)")
-    ap.add_argument("--data_dir", default="",
-                    help="local MSD/cvaad-challenge dir (graph_out/); empty = synthetic")
+    ap.add_argument("--data_csv", default="",
+                    help="path to mds_V2_5.372k.csv (real MSD); empty = synthetic")
+    ap.add_argument("--group", choices=["plan_id", "unit_id"], default=CFG.msd_group,
+                    help="real-MSD grouping: plan_id (brief, per floor) or unit_id (per apartment)")
+    ap.add_argument("--residential_only", action="store_true",
+                    help="keep only RESIDENTIAL units (brief keeps all 'area' rooms)")
     ap.add_argument("--msd_limit", type=int, default=2000,
-                    help="max real plans to read (keep small; do NOT use full dataset)")
+                    help="max real plans to read (CSV is large; reads only this many)")
     ap.add_argument("--device", type=str, default=CFG.device)
     ap.add_argument("--seed", type=int, default=CFG.seed)
+    ap.add_argument("--out_dir", default=CFG.out_dir,
+                    help="where to write ckpt.pt / held.pkl")
     args = ap.parse_args()
 
     CFG.steps = args.steps
     CFG.batch_size = args.batch_size
     CFG.device = args.device
     CFG.seed = args.seed
+    CFG.out_dir = args.out_dir
+    CFG.msd_group = args.group
+    CFG.msd_residential_only = args.residential_only
     if args.overfit:
         args.n_train = args.overfit
         CFG.batch_size = min(CFG.batch_size, args.overfit)
 
-    torch.manual_seed(CFG.seed)
+    seed_everything(CFG.seed)                 # brief: fixed seed 42 throughout
     rng = np.random.default_rng(CFG.seed)
     dev = CFG.device
     os.makedirs(CFG.out_dir, exist_ok=True)
 
-    if args.data_dir:
+    if args.data_csv:
         import msd_data
-        print(f"[data] loading MSD from {args.data_dir} (limit {args.msd_limit})...")
-        all_s, _vocab = msd_data.load_msd_samples(args.data_dir, CFG, limit=args.msd_limit)
+        print(f"[data] loading MSD from {args.data_csv} "
+              f"(group={args.group}, limit {args.msd_limit})...")
+        all_s, _vocab = msd_data.load_msd_samples(
+            args.data_csv, CFG, limit=args.msd_limit, group=args.group,
+            residential_only=args.residential_only)
         rng.shuffle(all_s)
         n_held = min(args.n_held, len(all_s) // 5)
         held_samples, train_samples = all_s[:n_held], all_s[n_held:]
