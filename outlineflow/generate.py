@@ -28,7 +28,7 @@ from postprocess import voronoi_layout, layout_from_tokens, coverage_overlap
 DEFAULT_CKPT = f"{CFG.out_dir}/ckpt.pt"
 _RESTORE_KEYS = ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
                  "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
-                 "msd_group")
+                 "msd_group", "use_scale")
 _CACHE: dict = {}
 
 
@@ -63,12 +63,12 @@ def load_model(ckpt_path: str = DEFAULT_CKPT, device: str | None = None):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
-    model.load_state_dict(ck["model"])
+    model.load_state_dict(ck["model"], strict=False)   # strict=False: load older ckpts
     ema = EMA(model, CFG.ema_decay)
     ema.load_state_dict(ck["ema"])
     model = ema.make_model(model).to(device).eval()
-    _CACHE[key] = (model, ck["stats"])
-    return model, ck["stats"]
+    _CACHE[key] = (model, ck["stats"], ck.get("scale_stats"))
+    return _CACHE[key]
 
 
 def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
@@ -93,16 +93,21 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
     seed_everything(seed)
     device = device or CFG.device
     outline = _to_polygon(outline)
-    model, stats = load_model(ckpt, device)
+    model, stats, scale_stats = load_model(ckpt, device)
     decoder = decoder or CFG.decoder
     decode = voronoi_layout if decoder == "voronoi" else layout_from_tokens
 
     OUT = params.sample_outline_points(outline, CFG.p_outline)[None]   # [1,P,4]
     Ot = torch.from_numpy(OUT).to(device)
+    # absolute-scale condition (only if the model was trained with it)
+    St = None
+    if getattr(CFG, "use_scale", False) and scale_stats is not None:
+        S = (params.outline_scale(outline)[None] - scale_stats[0]) / scale_stats[1]
+        St = torch.from_numpy(S.astype(np.float32)).to(device)
     # dedicated CPU generator so identical (outline, seed) -> identical rooms,
     # independent of the load_model cache / global-RNG consumption (brief: seed 42).
     gen = torch.Generator().manual_seed(int(seed))
-    x = sample(model, Ot, CFG, generator=gen)[0].cpu().numpy()         # [n_max,D]
+    x = sample(model, Ot, CFG, generator=gen, scale=St)[0].cpu().numpy()  # [n_max,D]
     rooms = decode(x, outline, stats, CFG, presence_thresh=presence_thresh)
     return [(poly, int(t)) for poly, t in rooms]
 

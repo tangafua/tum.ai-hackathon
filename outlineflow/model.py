@@ -84,6 +84,11 @@ class OutlineFlow(nn.Module):
         self.gfp = GaussianFourierProjection(d)
         self.t_embed = nn.Sequential(nn.Linear(d, d), nn.SiLU(), nn.Linear(d, d))
         self.outline_enc = OutlineEncoder(d)
+        # optional absolute-scale conditioning ([log area, log w, log h] -> d), so the
+        # model can vary room COUNT with outline size (sample_outline_points drops scale)
+        self.use_scale = getattr(cfg, "use_scale", False)
+        if self.use_scale:
+            self.scale_embed = nn.Sequential(nn.Linear(3, d), nn.SiLU(), nn.Linear(d, d))
         self.blocks = nn.ModuleList(
             [AdaLNZeroBlock(d, cfg.n_heads, cfg.mlp_ratio) for _ in range(cfg.n_layers)]
         )
@@ -94,9 +99,12 @@ class OutlineFlow(nn.Module):
             nn.init.zeros_(m.weight)
             nn.init.zeros_(m.bias)
 
-    def forward(self, xt, t, outline):
+    def forward(self, xt, t, outline, scale=None):
         h = self.embed_tok(xt)                       # [B,N,d]
-        c = F.silu(self.t_embed(self.gfp(t)) + self.outline_enc(outline))  # [B,d]
+        c = self.t_embed(self.gfp(t)) + self.outline_enc(outline)         # [B,d]
+        if self.use_scale and scale is not None:
+            c = c + self.scale_embed(scale)
+        c = F.silu(c)
         for blk in self.blocks:
             h = blk(h, c)
         shift, scale = self.ada_out(c).chunk(2, dim=-1)

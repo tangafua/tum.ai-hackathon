@@ -29,25 +29,39 @@ def make_weight(x1, cfg):
     return W
 
 
-def fm_loss(model, x1, outline, cfg):
+def fm_loss(model, x1, outline, cfg, scale=None):
     B = x1.shape[0]
     t = torch.rand(B, device=x1.device)                     # per-SAMPLE scalar
     x0 = torch.randn_like(x1)
     xt = (1 - t)[:, None, None] * x0 + t[:, None, None] * x1
     v_target = x1 - x0
-    v_pred = model(xt, t, outline)
+    v_pred = model(xt, t, outline, scale)
     W = make_weight(x1, cfg)
     return (W * (v_pred - v_target) ** 2).mean()
 
 
+def _energy_grad(energy, x, t, outline):
+    """d/dx logit_real(x,t,outline) -- the direction that makes x look MORE real."""
+    with torch.enable_grad():
+        xg = x.detach().requires_grad_(True)
+        logit = energy(xg, t, outline).sum()
+        g, = torch.autograd.grad(logit, xg)
+    return g
+
+
 @torch.no_grad()
-def sample(model, outline, cfg, steps=None, heun_last=5, generator=None):
+def sample(model, outline, cfg, steps=None, heun_last=5, generator=None, scale=None,
+           energy=None, guidance=0.0, guide_from=0.3):
     """Integrate the velocity field from noise (t=0) to data (t=1).
 
     Pass ``generator`` (a torch.Generator) to make the initial noise -- and hence
     the whole sample -- reproducible INDEPENDENTLY of how much global RNG model
     construction / caching consumed.  generate() uses this so identical
     (outline, seed) always yields identical room polygons (brief: fixed seed 42).
+
+    energy/guidance: optional energy-guided sampling.  When ``energy`` is given and
+    ``guidance`` > 0, add  guidance * d/dx logit_real  to each step's update for
+    t >= guide_from (guidance only matters once x carries layout structure).
     """
     steps = steps or cfg.sample_steps
     B = outline.shape[0]
@@ -59,15 +73,19 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None):
     else:
         x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
     dt = 1.0 / steps
+    use_guide = energy is not None and guidance != 0.0
     for i in range(steps):
-        t = torch.full((B,), i * dt, device=dev)
-        v = model(x, t, outline)
+        tval = i * dt
+        t = torch.full((B,), tval, device=dev)
+        v = model(x, t, outline, scale)
         if i >= steps - heun_last:                           # Heun corrector near t=1
             t2 = torch.full((B,), min((i + 1) * dt, 1.0), device=dev)
-            v2 = model(x + v * dt, t2, outline)
+            v2 = model(x + v * dt, t2, outline, scale)
             x = x + 0.5 * (v + v2) * dt
         else:
             x = x + v * dt
+        if use_guide and tval >= guide_from:
+            x = x + guidance * dt * _energy_grad(energy, x, t, outline)
     return x
 
 

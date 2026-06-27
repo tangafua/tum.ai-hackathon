@@ -17,21 +17,21 @@ import metrics
 from cfg import CFG, seed_everything
 from model import OutlineFlow
 from flow import EMA, sample
-from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap
+from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap, align_layout
 from render import render_plan
 
 
 def load(ckpt_path):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     for k in ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
-              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac"):
+              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac", "use_scale"):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
-    model.load_state_dict(ck["model"])
+    model.load_state_dict(ck["model"], strict=False)   # strict=False: load older ckpts
     ema = EMA(model, CFG.ema_decay)
     ema.load_state_dict(ck["ema"])
-    return ema.make_model(model), ck["stats"]
+    return ema.make_model(model), ck["stats"], ck.get("scale_stats")
 
 
 def main():
@@ -51,6 +51,20 @@ def main():
                     help="rect: axis-aligned rectangles (matches real MSD, default); "
                          "voronoi: gap-free seed-partition tiling (non-rectangular)")
     ap.add_argument("--seed", type=int, default=CFG.seed)
+    ap.add_argument("--align", action="store_true",
+                    help="grid-snap / axis-align generated rooms before scoring (post-process C)")
+    ap.add_argument("--grid", type=int, default=48,
+                    help="grid divisions for --align (lower = coarser/more regular)")
+    ap.add_argument("--metric_cpu", action="store_true",
+                    help="run FID/feature metrics on CPU (avoids GPU OOM when VRAM is contended)")
+    ap.add_argument("--target_count", type=float, default=0.0,
+                    help="override calibration target room-count (0 = use real mean)")
+    ap.add_argument("--energy_ckpt", default="",
+                    help="EnergyCritic checkpoint for energy-guided sampling")
+    ap.add_argument("--guidance", type=float, default=0.0,
+                    help="energy guidance strength (0 = off)")
+    ap.add_argument("--guide_from", type=float, default=0.3,
+                    help="apply guidance only for t >= this (sampling time fraction)")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -59,12 +73,23 @@ def main():
     CFG.device = args.device
     dev = args.device
     # FID/Inception use float64 covariance accumulators -> MPS can't; run metrics on CPU
-    metric_dev = "cpu" if dev == "mps" else dev
+    metric_dev = "cpu" if (dev == "mps" or args.metric_cpu) else dev
     ckpt_path = args.ckpt or f"{CFG.out_dir}/ckpt.pt"
     held_path = args.held or f"{CFG.out_dir}/held.pkl"
 
-    model, stats = load(ckpt_path)
+    model, stats, scale_stats = load(ckpt_path)
     model = model.to(dev)
+
+    # optional energy critic for energy-guided sampling
+    energy = None
+    if args.energy_ckpt and args.guidance != 0.0:
+        from energy import EnergyCritic
+        eck = torch.load(args.energy_ckpt, map_location="cpu", weights_only=False)
+        energy = EnergyCritic(CFG, n_layers=eck.get("n_critic_layers", 3))
+        energy.load_state_dict(eck["model"])
+        energy = energy.to(dev).eval()
+        print(f"[energy] guided sampling ON (guidance={args.guidance}, "
+              f"guide_from={args.guide_from})")
     held = pickle.load(open(held_path, "rb"))[: args.n_eval]
     outlines = [s["outline"] for s in held]
     print(f"[eval] {len(held)} held outlines | device={dev} | decoder={args.decoder} | "
@@ -73,11 +98,21 @@ def main():
     # condition tensors
     OUT = np.stack([params.sample_outline_points(o, CFG.p_outline) for o in outlines])
     Ot = torch.from_numpy(OUT).to(dev)
+    # absolute-scale condition (only when the model was trained with it)
+    St = None
+    if getattr(CFG, "use_scale", False) and scale_stats is not None:
+        S = np.stack([params.outline_scale(o) for o in outlines])
+        S = (S - scale_stats[0]) / scale_stats[1]
+        St = torch.from_numpy(S.astype(np.float32)).to(dev)
+        print(f"[scale] conditioning ON (use_scale + scale_stats loaded)")
 
     # 1) sample all raw token tensors
     raw = []
     for i in range(0, len(outlines), args.batch):
-        xb = sample(model, Ot[i:i + args.batch], CFG).cpu().numpy()
+        sb = St[i:i + args.batch] if St is not None else None
+        xb = sample(model, Ot[i:i + args.batch], CFG, scale=sb,
+                    energy=energy, guidance=args.guidance,
+                    guide_from=args.guide_from).cpu().numpy()
         raw.extend(list(xb))
 
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
@@ -89,7 +124,8 @@ def main():
     #    variation is preserved (bigger outlines fire more slots).
     thresh = 0.0
     if args.calibrate:
-        target = float(np.mean([len(r) for r, _ in real_plans]))
+        target = (args.target_count if args.target_count > 0
+                  else float(np.mean([len(r) for r, _ in real_plans])))
         sub = list(zip(raw, outlines))[:min(40, len(raw))]
 
         def mean_count(t):
@@ -111,6 +147,11 @@ def main():
     # 3) decode + postprocess to valid layouts
     gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
                  for x, o in zip(raw, outlines)]
+
+    # 3b) optional alignment post-process (C): grid-snap rooms to the building axes
+    if args.align:
+        gen_plans = [(align_layout(r, o, CFG, grid=args.grid), o) for r, o in gen_plans]
+        print(f"[align] grid-snapped layouts (grid={args.grid})")
 
     # diagnostics
     real_counts = np.array([len(r) for r, _ in real_plans])

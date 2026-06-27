@@ -68,6 +68,25 @@ def outline_bbox(outline: Polygon):
     return float(bx0), float(by0), float(bw), float(bh)
 
 
+def outline_scale(outline) -> np.ndarray:
+    """Absolute SIZE of the outline in metres -> [log area, log w, log h].
+
+    sample_outline_points() normalizes the boundary to [-1,1], discarding scale, so
+    the model cannot tell a 30 m2 flat from a 300 m2 floor and emits a near-constant
+    room count.  Room-count correlates with area (r~0.88), so this size vector -- a
+    pure function of the outline -- lets the model match the real count spread.
+    """
+    bx0, by0, bw, bh = outline_bbox(outline)
+    return np.array([np.log(max(outline.area, 1e-6)),
+                     np.log(bw), np.log(bh)], dtype=np.float32)
+
+
+def compute_scale_stats(samples) -> np.ndarray:
+    """[2,3] = per-dim (mean, std) of outline_scale over samples, for standardization."""
+    s = np.stack([outline_scale(x["outline"]) for x in samples])
+    return np.stack([s.mean(0), s.std(0) + 1e-6]).astype(np.float32)
+
+
 def _exterior_rings(outline):
     """Exterior ring(s) of a (Multi)Polygon outline, as a list of LinearRings.
 

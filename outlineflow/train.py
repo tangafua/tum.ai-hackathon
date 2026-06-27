@@ -47,12 +47,34 @@ def main():
                     help="max real plans to read (CSV is large; reads only this many)")
     ap.add_argument("--device", type=str, default=CFG.device)
     ap.add_argument("--seed", type=int, default=CFG.seed)
+    ap.add_argument("--d_model", type=int, default=CFG.d_model,
+                    help="transformer width (default 128)")
+    ap.add_argument("--n_layers", type=int, default=CFG.n_layers,
+                    help="transformer depth (default 4)")
+    ap.add_argument("--w_type", type=float, default=CFG.w_type,
+                    help="loss weight on room-type channels (default 0.5)")
+    ap.add_argument("--w_geometry", type=float, default=CFG.w_geometry,
+                    help="loss weight on geometry channels (default 1.0)")
+    ap.add_argument("--w_presence", type=float, default=CFG.w_presence,
+                    help="loss weight on the presence channel (default 2.0)")
+    ap.add_argument("--use_scale", action="store_true",
+                    help="inject absolute outline size so room-count tracks outline area")
+    ap.add_argument("--ewfm", action="store_true",
+                    help="energy-weighted FM: importance-sample rare (tail) room-counts")
+    ap.add_argument("--ewfm_beta", type=float, default=0.5,
+                    help="EWFM strength: weight = (1/p_count)^beta (0=uniform, 1=full)")
     ap.add_argument("--out_dir", default=CFG.out_dir,
                     help="where to write ckpt.pt / held.pkl")
     args = ap.parse_args()
 
     CFG.steps = args.steps
     CFG.batch_size = args.batch_size
+    CFG.d_model = args.d_model
+    CFG.n_layers = args.n_layers
+    CFG.w_type = args.w_type
+    CFG.w_geometry = args.w_geometry
+    CFG.w_presence = args.w_presence
+    CFG.use_scale = args.use_scale
     CFG.device = args.device
     CFG.seed = args.seed
     CFG.out_dir = args.out_dir
@@ -90,6 +112,31 @@ def main():
     Xt = torch.from_numpy(X).to(dev)
     Ot = torch.from_numpy(OUT).to(dev)
 
+    # absolute outline-size conditioning (standardized [log area, log w, log h])
+    scale_stats = None
+    St = None
+    if CFG.use_scale:
+        scale_stats = params.compute_scale_stats(train_samples)            # [2,3]
+        S = np.stack([params.outline_scale(s["outline"]) for s in train_samples])
+        S = (S - scale_stats[0]) / scale_stats[1]
+        St = torch.from_numpy(S.astype(np.float32)).to(dev)
+        print(f"[scale] use_scale=ON | scale_stats mean={scale_stats[0].round(2)} "
+              f"std={scale_stats[1].round(2)}")
+
+    # energy-weighted FM: importance-sample by inverse room-count frequency so the
+    # model sees the rare large/small plans it otherwise regresses away (-> Coverage)
+    samp_w = None
+    if args.ewfm:
+        counts = (X[..., 0] > 0).sum(axis=1).astype(int)                  # rooms/sample
+        cmin = counts.min()
+        freq = np.bincount(counts - cmin).astype(np.float64)
+        p = freq[counts - cmin] / freq.sum()
+        w = (1.0 / np.maximum(p, 1e-9)) ** args.ewfm_beta
+        w = np.clip(w / w.mean(), 0.1, 20.0)                              # tame extremes
+        samp_w = torch.tensor(w, dtype=torch.float64, device=dev)
+        print(f"[ewfm] ON beta={args.ewfm_beta} | weight range "
+              f"[{w.min():.2f},{w.max():.2f}] | count range [{counts.min()},{counts.max()}]")
+
     model = OutlineFlow(CFG).to(dev)
     print(f"[model] OutlineFlow d_model={CFG.d_model} L={CFG.n_layers} "
           f"params={count_params(model)/1e6:.2f}M device={dev}")
@@ -102,8 +149,11 @@ def main():
     for step in range(CFG.steps):
         for g in opt.param_groups:
             g["lr"] = lr_at(step, CFG)
-        idx = torch.randint(0, N, (CFG.batch_size,), device=dev)
-        loss = fm_loss(model, Xt[idx], Ot[idx], CFG)
+        if samp_w is not None:
+            idx = torch.multinomial(samp_w, CFG.batch_size, replacement=True)
+        else:
+            idx = torch.randint(0, N, (CFG.batch_size,), device=dev)
+        loss = fm_loss(model, Xt[idx], Ot[idx], CFG, scale=(St[idx] if St is not None else None))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), CFG.grad_clip)
@@ -117,13 +167,15 @@ def main():
         # rolling ckpt_last.pt, so a long run survives an interruption.
         if (step + 1) % max(1, CFG.steps // 6) == 0 and step != CFG.steps - 1:
             snap = {"model": model.state_dict(), "ema": ema.state_dict(),
-                    "stats": stats, "cfg": vars(CFG), "step": step + 1}
+                    "stats": stats, "scale_stats": scale_stats,
+                    "cfg": vars(CFG), "step": step + 1}
             torch.save(snap, f"{CFG.out_dir}/ckpt_step{step+1}.pt")
             torch.save(snap, f"{CFG.out_dir}/ckpt_last.pt")
             print(f"  [checkpoint] saved {CFG.out_dir}/ckpt_step{step+1}.pt", flush=True)
 
     torch.save({"model": model.state_dict(), "ema": ema.state_dict(),
-                "stats": stats, "cfg": vars(CFG)}, f"{CFG.out_dir}/ckpt.pt")
+                "stats": stats, "scale_stats": scale_stats,
+                "cfg": vars(CFG)}, f"{CFG.out_dir}/ckpt.pt")
     with open(f"{CFG.out_dir}/held.pkl", "wb") as fh:
         pickle.dump(held_samples, fh)
     print(f"[done] final loss {np.mean(losses[-50:]):.4f}  -> {CFG.out_dir}/ckpt.pt")

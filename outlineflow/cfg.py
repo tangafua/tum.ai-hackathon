@@ -124,6 +124,10 @@ class Config:
     max_rooms: int = 8
     seed: int = 42                # brief: fixed seed 42 throughout
 
+    # --- outline scale conditioning (derived from the outline ONLY; spec-compliant) ---
+    use_scale: bool = False       # inject absolute outline size [log area, log w, log h] so
+                                  # the model can vary room-COUNT with outline size (Coverage)
+
     # --- real MSD ---
     msd_group: str = "plan_id"    # brief appendix groups by plan_id; "unit_id" = per-apartment
     msd_residential_only: bool = False  # brief does not filter usage; keep all 'area' rooms
