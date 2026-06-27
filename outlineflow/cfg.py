@@ -128,7 +128,10 @@ class Config:
     msd_group: str = "plan_id"    # brief appendix groups by plan_id; "unit_id" = per-apartment
     msd_residential_only: bool = False  # brief does not filter usage; keep all 'area' rooms
 
-    # --- render / eval ---
+    # --- decode / render / eval ---
+    decoder: str = "rect"          # "rect" (axis-aligned rectangles, matches real MSD)
+                                   # or "voronoi" (gap-free fallback, non-rectangular)
+    theta_snap: bool = True        # snap room angles to the outline's axes (rectilinear)
     canvas: int = 256
     nearest_k: int = 5
     min_area_frac: float = 0.005   # drop slivers below this fraction of outline area

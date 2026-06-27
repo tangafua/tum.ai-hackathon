@@ -71,7 +71,7 @@ def load_model(ckpt_path: str = DEFAULT_CKPT, device: str | None = None):
     return model, ck["stats"]
 
 
-def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str = "voronoi",
+def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
              presence_thresh: float = 0.0, seed: int = 42,
              device: str | None = None):
     """Generate the interior rooms for one apartment ``outline``.
@@ -79,7 +79,8 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str = "voronoi",
     Parameters
     ----------
     outline : shapely (Multi)Polygon or WKT string -- the ONLY condition.
-    decoder : "voronoi" (gap-free seed partition, default) or "rect" (boxes+gap-fill).
+    decoder : None -> cfg.decoder ("rect", axis-aligned rectangles matching real MSD);
+              "voronoi" = gap-free seed partition (non-rectangular fallback).
     presence_thresh : slot-presence cut; 0.0 = the model's natural threshold.
                       (sample_eval can compute a room-count-calibrated value.)
     seed : fixed at 42 per the brief for reproducible sampling.
@@ -93,6 +94,7 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str = "voronoi",
     device = device or CFG.device
     outline = _to_polygon(outline)
     model, stats = load_model(ckpt, device)
+    decoder = decoder or CFG.decoder
     decode = voronoi_layout if decoder == "voronoi" else layout_from_tokens
 
     OUT = params.sample_outline_points(outline, CFG.p_outline)[None]   # [1,P,4]
@@ -122,7 +124,7 @@ def main():
     import argparse, os
     ap = argparse.ArgumentParser(description="generate(outline) -> room polygons")
     ap.add_argument("--ckpt", default=DEFAULT_CKPT)
-    ap.add_argument("--decoder", choices=["voronoi", "rect"], default="voronoi")
+    ap.add_argument("--decoder", choices=["voronoi", "rect"], default=CFG.decoder)
     ap.add_argument("--device", default=CFG.device)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--outline_wkt", default="",

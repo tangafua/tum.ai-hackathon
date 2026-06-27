@@ -47,8 +47,9 @@ def main():
     ap.add_argument("--save", type=int, default=8)
     ap.add_argument("--no-calibrate", dest="calibrate", action="store_false",
                     help="disable matching the generated room-count to the real mean")
-    ap.add_argument("--decoder", choices=["voronoi", "rect"], default="voronoi",
-                    help="voronoi: seed-partition tiling (clean); rect: raw boxes+gap-fill")
+    ap.add_argument("--decoder", choices=["voronoi", "rect"], default=CFG.decoder,
+                    help="rect: axis-aligned rectangles (matches real MSD, default); "
+                         "voronoi: gap-free seed-partition tiling (non-rectangular)")
     ap.add_argument("--seed", type=int, default=CFG.seed)
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()

@@ -12,9 +12,32 @@ Output: list of (shapely (Multi)Polygon, type_id) with union(rooms) == outline
 (zero overlap, zero interior background) -- exactly what the metrics reward.
 """
 from __future__ import annotations
+import numpy as np
 from shapely.ops import unary_union, voronoi_diagram
 from shapely.geometry import MultiPoint, Point
 import params
+
+
+def outline_axis_angle(outline) -> float:
+    """Dominant orientation of the building (radians), from the outline's MRR.
+
+    Real Swiss apartments are rectilinear, but the whole plan can sit at any global
+    angle, so we align rooms to the OUTLINE's own axes (not global 0/90).
+    """
+    try:
+        mrr = outline.minimum_rotated_rectangle
+        xs, ys = mrr.exterior.coords.xy
+        pts = np.column_stack([xs, ys])[:-1]
+        e = pts[1] - pts[0]
+        return float(np.arctan2(e[1], e[0]))
+    except Exception:
+        return 0.0
+
+
+def snap_theta(theta: float, base: float) -> float:
+    """Snap a room angle to base + k*90deg (nearest), i.e. align to the building axes."""
+    half_pi = np.pi / 2.0
+    return base + round((theta - base) / half_pi) * half_pi
 
 
 def _largest(geom):
@@ -33,14 +56,20 @@ def _clean(geom):
     return geom
 
 
-def layout_from_tokens(x1_np, outline, stats, cfg, presence_thresh=0.0):
+def layout_from_tokens(x1_np, outline, stats, cfg, presence_thresh=0.0,
+                       theta_snap=None):
     dec = params.decode_x1(x1_np, outline, stats, cfg)      # sorted presence desc
     present = [d for d in dec if d["presence"] > presence_thresh] or dec[:1]
+
+    # axis-align rooms to the building (real apartments are rectilinear)
+    snap = cfg.theta_snap if theta_snap is None else theta_snap
+    base = outline_axis_angle(outline) if snap else 0.0
 
     # 3. clip to outline
     rooms = []
     for d in present:
-        poly = params.rect_polygon(d["cx"], d["cy"], d["w"], d["h"], d["theta"])
+        theta = snap_theta(d["theta"], base) if snap else d["theta"]
+        poly = params.rect_polygon(d["cx"], d["cy"], d["w"], d["h"], theta)
         poly = _clean(poly.intersection(outline))
         poly = _largest(poly)
         if not poly.is_empty and poly.area > 0:
