@@ -112,7 +112,15 @@ def main():
         losses.append(loss.item())
         if step % max(1, CFG.steps // 20) == 0 or step == CFG.steps - 1:
             print(f"  step {step:5d}/{CFG.steps}  loss {np.mean(losses[-50:]):.4f}  "
-                  f"lr {lr_at(step,CFG):.2e}  ({time.time()-t0:.0f}s)")
+                  f"lr {lr_at(step,CFG):.2e}  ({time.time()-t0:.0f}s)", flush=True)
+        # periodic checkpointing: a numbered snapshot every ~1/6 of training plus a
+        # rolling ckpt_last.pt, so a long run survives an interruption.
+        if (step + 1) % max(1, CFG.steps // 6) == 0 and step != CFG.steps - 1:
+            snap = {"model": model.state_dict(), "ema": ema.state_dict(),
+                    "stats": stats, "cfg": vars(CFG), "step": step + 1}
+            torch.save(snap, f"{CFG.out_dir}/ckpt_step{step+1}.pt")
+            torch.save(snap, f"{CFG.out_dir}/ckpt_last.pt")
+            print(f"  [checkpoint] saved {CFG.out_dir}/ckpt_step{step+1}.pt", flush=True)
 
     torch.save({"model": model.state_dict(), "ema": ema.state_dict(),
                 "stats": stats, "cfg": vars(CFG)}, f"{CFG.out_dir}/ckpt.pt")

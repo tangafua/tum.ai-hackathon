@@ -1,0 +1,18 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Data files
+*.csv
+*.pdf
+
+# Model checkpoints / artifacts
+*.pt
+*.pkl
+*.ckpt
+
+# Outputs, logs, run state
+outputs/
+outputs_*/
+*.log
+*.pid
