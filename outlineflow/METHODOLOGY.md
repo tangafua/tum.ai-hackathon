@@ -49,13 +49,18 @@ supervised on every slot so padding slots don't drift. AdamW + cosine LR + EMA.
 Euler ODE `t:0→1` (100 steps, Heun corrector near `t=1`) with EMA weights, then a
 **deterministic decoder** turns tokens into a valid layout:
 
-- **voronoi** (default): partition the outline by Voronoi cells around predicted
-  room seeds — gap-free, non-overlapping, diverse.
-- **rect**: raw oriented rectangles → clip to outline → overlap-resolve →
-  sliver-drop → mandatory gap-fill.
+- **rect** (default): the model's predicted oriented rectangles, with each angle
+  **θ-snapped to the outline's own axes** (real Swiss apartments are rectilinear,
+  and the building can sit at any global angle) → clip to outline → overlap-resolve
+  → sliver-drop → mandatory gap-fill. Produces axis-aligned **rectangular** rooms
+  that look like real floor plans.
+- **voronoi** (fallback): partition the outline by Voronoi cells around predicted
+  room seeds — gap-free and count-faithful but **non-rectangular**.
 
 Both **guarantee `union(rooms) == outline`** (zero overlap, zero interior gap),
-which directly protects coverage. `generate(outline)` ([generate.py](generate.py))
+which directly protects coverage. At eval, one global presence threshold is
+**count-calibrated** (binary-searched on the *final decoded* count) so the generated
+room-count distribution matches real. `generate(outline)` ([generate.py](generate.py))
 chains outline → sample → decode and returns the room polygons.
 
 ## 5. Grouping (plan_id vs unit_id)

@@ -81,16 +81,30 @@ def main():
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
 
     # 2) calibrate one global presence threshold so the generated room-count
-    #    distribution matches the real mean (rectified flow's 0-cut is biased).
-    #    Per-outline variation is preserved: bigger outlines fire more slots.
+    #    distribution matches the real mean.  We calibrate on the FINAL decoded
+    #    count (not raw present-slots), so it accounts for rooms the rect decoder
+    #    drops in overlap-resolve / sliver-drop.  Decoder-agnostic; per-outline
+    #    variation is preserved (bigger outlines fire more slots).
     thresh = 0.0
     if args.calibrate:
-        target_frac = float(np.mean([len(r) for r, _ in real_plans])) / CFG.n_max
-        pres = np.sort(np.concatenate([x[:, 0] for x in raw]))[::-1]
-        kth = min(max(int(round(target_frac * len(pres))), 1), len(pres) - 1)
-        thresh = float(pres[kth])
-        print(f"[calib] target present-fraction {target_frac:.3f} -> "
-              f"presence_thresh {thresh:.3f}")
+        target = float(np.mean([len(r) for r, _ in real_plans]))
+        sub = list(zip(raw, outlines))[:min(40, len(raw))]
+
+        def mean_count(t):
+            return float(np.mean([len(decode(x, o, stats, CFG, presence_thresh=t))
+                                  for x, o in sub]))
+
+        lo = float(min(x[:, 0].min() for x in raw))
+        hi = float(max(x[:, 0].max() for x in raw))
+        for _ in range(18):                       # binary search (count decreases with t)
+            mid = 0.5 * (lo + hi)
+            if mean_count(mid) > target:
+                lo = mid                          # too many rooms -> raise threshold
+            else:
+                hi = mid
+        thresh = 0.5 * (lo + hi)
+        print(f"[calib] target count {target:.1f} -> presence_thresh {thresh:.3f} "
+              f"(decoded ~{mean_count(thresh):.1f} on subsample)")
 
     # 3) decode + postprocess to valid layouts
     gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
