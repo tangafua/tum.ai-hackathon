@@ -24,7 +24,8 @@ from render import render_plan
 def load(ckpt_path):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     for k in ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
-              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac", "use_scale"):
+              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
+              "use_scale", "diffusion"):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
@@ -65,6 +66,14 @@ def main():
                     help="energy guidance strength (0 = off)")
     ap.add_argument("--guide_from", type=float, default=0.3,
                     help="apply guidance only for t >= this (sampling time fraction)")
+    ap.add_argument("--churn", type=float, default=0.0,
+                    help="SDE-style noise injection during sampling (0=deterministic ODE)")
+    ap.add_argument("--sample_steps", type=int, default=0,
+                    help="override ODE steps (0 = cfg.sample_steps)")
+    ap.add_argument("--rerank", type=int, default=1,
+                    help="best-of-N: sample N per outline, keep the one the critic scores most real")
+    ap.add_argument("--eta", type=float, default=1.0,
+                    help="diffusion sampler stochasticity (1=DDPM ancestral, 0=DDIM)")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -80,16 +89,16 @@ def main():
     model, stats, scale_stats = load(ckpt_path)
     model = model.to(dev)
 
-    # optional energy critic for energy-guided sampling
+    # optional energy critic (for guidance and/or best-of-N rerank)
     energy = None
-    if args.energy_ckpt and args.guidance != 0.0:
+    if args.energy_ckpt and (args.guidance != 0.0 or args.rerank > 1):
         from energy import EnergyCritic
         eck = torch.load(args.energy_ckpt, map_location="cpu", weights_only=False)
         energy = EnergyCritic(CFG, n_layers=eck.get("n_critic_layers", 3))
         energy.load_state_dict(eck["model"])
         energy = energy.to(dev).eval()
-        print(f"[energy] guided sampling ON (guidance={args.guidance}, "
-              f"guide_from={args.guide_from})")
+        print(f"[energy] critic loaded (guidance={args.guidance}, rerank={args.rerank})")
+    steps = args.sample_steps or None
     held = pickle.load(open(held_path, "rb"))[: args.n_eval]
     outlines = [s["outline"] for s in held]
     print(f"[eval] {len(held)} held outlines | device={dev} | decoder={args.decoder} | "
@@ -107,13 +116,33 @@ def main():
         print(f"[scale] conditioning ON (use_scale + scale_stats loaded)")
 
     # 1) sample all raw token tensors
+    is_diff = getattr(CFG, "diffusion", False)
+    if is_diff:
+        from diffusion import ddim_sample
+        print(f"[diffusion] DDPM sampler ON (eta={args.eta}, steps={steps or 100})")
+
+    def gen_sample(ob, sb):
+        if is_diff:
+            return ddim_sample(model, ob, CFG, steps=steps or 100, eta=args.eta, scale=sb)
+        return sample(model, ob, CFG, scale=sb, steps=steps, energy=energy,
+                      guidance=args.guidance, guide_from=args.guide_from, churn=args.churn)
+
     raw = []
     for i in range(0, len(outlines), args.batch):
         sb = St[i:i + args.batch] if St is not None else None
-        xb = sample(model, Ot[i:i + args.batch], CFG, scale=sb,
-                    energy=energy, guidance=args.guidance,
-                    guide_from=args.guide_from).cpu().numpy()
-        raw.extend(list(xb))
+        ob = Ot[i:i + args.batch]
+        xb = gen_sample(ob, sb)
+        if args.rerank > 1 and energy is not None:           # best-of-N critic rerank
+            best = xb
+            best_score = energy(xb, torch.ones(xb.shape[0], device=dev), ob)
+            for _ in range(args.rerank - 1):
+                cand = gen_sample(ob, sb)
+                sc = energy(cand, torch.ones(cand.shape[0], device=dev), ob)
+                take = (sc > best_score)
+                best = torch.where(take[:, None, None], cand, best)
+                best_score = torch.where(take, sc, best_score)
+            xb = best
+        raw.extend(list(xb.cpu().numpy()))
 
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
 

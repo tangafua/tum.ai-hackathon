@@ -23,9 +23,9 @@ import params
 from cfg import CFG, ROOM_NAMES, seed_everything
 from model import OutlineFlow
 from flow import EMA, sample
-from postprocess import voronoi_layout, layout_from_tokens, coverage_overlap
+from postprocess import voronoi_layout, layout_from_tokens, coverage_overlap, align_layout
 
-DEFAULT_CKPT = f"{CFG.out_dir}/ckpt.pt"
+DEFAULT_CKPT = "outputs_full_plan_id/ckpt.pt"   # full-data plan_id model (n_max=156)
 _RESTORE_KEYS = ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
                  "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
                  "msd_group", "use_scale")
@@ -72,8 +72,9 @@ def load_model(ckpt_path: str = DEFAULT_CKPT, device: str | None = None):
 
 
 def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
-             presence_thresh: float = 0.0, seed: int = 42,
-             device: str | None = None):
+             presence_thresh: float = -1.04, seed: int = 42,
+             device: str | None = None, churn: float = 0.3,
+             align: bool = True, grid: int = 16):
     """Generate the interior rooms for one apartment ``outline``.
 
     Parameters
@@ -107,8 +108,12 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
     # dedicated CPU generator so identical (outline, seed) -> identical rooms,
     # independent of the load_model cache / global-RNG consumption (brief: seed 42).
     gen = torch.Generator().manual_seed(int(seed))
-    x = sample(model, Ot, CFG, generator=gen, scale=St)[0].cpu().numpy()  # [n_max,D]
+    # churn = SDE-style stochastic sampling (best diversity lever, brief allows it;
+    # determinism preserved via the fixed seed). align = grid-snap post-process (FID).
+    x = sample(model, Ot, CFG, generator=gen, scale=St, churn=churn)[0].cpu().numpy()
     rooms = decode(x, outline, stats, CFG, presence_thresh=presence_thresh)
+    if align and decoder != "voronoi":
+        rooms = align_layout(rooms, outline, CFG, grid=grid)
     return [(poly, int(t)) for poly, t in rooms]
 
 

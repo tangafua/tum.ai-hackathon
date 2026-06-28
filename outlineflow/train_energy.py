@@ -40,7 +40,10 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--n_critic_layers", type=int, default=3)
+    ap.add_argument("--churn", type=float, default=0.0,
+                    help="generate fakes with this SDE churn (match the eval sampler)")
     ap.add_argument("--out_dir", default="outputs_full_plan_id")
+    ap.add_argument("--ckpt_name", default="energy_critic.pt")
     ap.add_argument("--device", default=CFG.device)
     args = ap.parse_args()
 
@@ -71,7 +74,8 @@ def main():
     with torch.no_grad():
         for i in range(0, N, args.batch):
             sb = St[i:i + args.batch] if St is not None else None
-            Xf[i:i + args.batch] = sample(model, Ot[i:i + args.batch], CFG, scale=sb)
+            Xf[i:i + args.batch] = sample(model, Ot[i:i + args.batch], CFG, scale=sb,
+                                          churn=args.churn)
 
     critic = EnergyCritic(CFG, n_layers=args.n_critic_layers).to(dev)
     opt = torch.optim.AdamW(critic.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -96,9 +100,10 @@ def main():
             print(f"  step {step:5d}/{args.steps}  loss {loss.item():.4f}  acc {acc:.3f}  "
                   f"({time.time()-t0:.0f}s)", flush=True)
 
-    out = f"{args.out_dir}/energy_critic.pt"
+    out = f"{args.out_dir}/{args.ckpt_name}"
     torch.save({"model": critic.state_dict(), "cfg": vars(CFG),
-                "n_critic_layers": args.n_critic_layers, "flow_ckpt": args.flow_ckpt}, out)
+                "n_critic_layers": args.n_critic_layers, "flow_ckpt": args.flow_ckpt,
+                "train_churn": args.churn}, out)
     print(f"[done] saved {out}")
 
 
