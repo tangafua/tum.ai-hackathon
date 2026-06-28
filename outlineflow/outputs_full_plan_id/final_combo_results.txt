@@ -1,0 +1,5 @@
+config, FID, Density, Coverage, gen_rooms
+scale30k+churn0.3, 143.841, 0.073, 0.082, 24.62
+scale30k+churn0.6, 145.810, 0.074, 0.077, 24.71
+baseline+churn0.3+steps200, 133.636, 0.094, 0.113, 28.33
+DONE

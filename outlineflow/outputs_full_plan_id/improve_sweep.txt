@@ -1,0 +1,8 @@
+config, FID, Density, Coverage, rooms (baseline+align g16, single seed)
+1_count_cond+churn0.3, 153.925, 0.082, 0.103, 23.32
+1_count_cond_nochurn, 151.241, 0.073, 0.080, 23.58
+2_repel1+churn0.3, 158.057, 0.063, 0.075, 23.84
+2_repel3+churn0.3, 189.148, 0.025, 0.030, 17.37
+3_temp1.15+churn0.3, 144.091, 0.075, 0.107, 27.34
+3_temp1.3+churn0.3, 155.848, 0.055, 0.080, 25.13
+DONE

@@ -1,0 +1,19 @@
+================ OutlineFlow Eval (full data, plan_id, 15000 steps) ================
+date: Sat Jun 27 19:15:18 UTC 2026
+ckpt: outputs_full_plan_id/ckpt.pt
+metric: official InceptionV3 FID on rendered images (torchmetrics + prdc)
+===================================================================================
+
+Downloading: "https://github.com/toshas/torch-fidelity/releases/download/v0.2.0/weights-inception-2015-12-05-6726825d.pth" to /root/.cache/torch/hub/checkpoints/weights-inception-2015-12-05-6726825d.pth
+  0%|          | 0.00/91.2M [00:00<?, ?B/s]  1%|▏         | 1.25M/91.2M [00:00<00:07, 11.9MB/s] 17%|█▋        | 15.6M/91.2M [00:00<00:00, 87.2MB/s] 36%|███▋      | 33.1M/91.2M [00:00<00:00, 129MB/s]  54%|█████▎    | 48.9M/91.2M [00:00<00:00, 143MB/s] 73%|███████▎  | 66.5M/91.2M [00:00<00:00, 157MB/s] 91%|█████████ | 82.6M/91.2M [00:00<00:00, 161MB/s]100%|██████████| 91.2M/91.2M [00:00<00:00, 143MB/s]
+[eval] 600 held outlines | device=cuda | decoder=rect | features=inception
+[calib] target count 38.1 -> presence_thresh -1.040 (decoded ~34.6 on subsample)
+[diag] rooms/plan  real 38.07±23.73  gen 34.92±6.11
+[diag] generated interior coverage 1.000  overlap 0.0014  (target coverage~1, overlap~0)
+  [sanity] real-vs-real (official): FID=-0.000 D=1.000 C=1.000  (expect ~0, ~1, ~1)
+
+===== SCORES (OFFICIAL torchmetrics+prdc) =====
+  FID      167.099   (lower better)
+  Density  0.097   (higher better)
+  Coverage 0.067   (higher better)
+[eval] wrote 12 real|gen pairs -> outputs_full_plan_id/samples

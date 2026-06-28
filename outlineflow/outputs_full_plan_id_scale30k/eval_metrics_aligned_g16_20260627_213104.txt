@@ -1,0 +1,14 @@
+==== scale 30k + w_presence=4 | align g16 | metrics CPU ====
+[eval] 600 held outlines | device=cuda | decoder=rect | features=inception
+[scale] conditioning ON (use_scale + scale_stats loaded)
+[calib] target count 38.1 -> presence_thresh -1.037 (decoded ~29.6 on subsample)
+[align] grid-snapped layouts (grid=16)
+[diag] rooms/plan  real 38.07±23.73  gen 24.89±5.32
+[diag] generated interior coverage 1.000  overlap 0.0000  (target coverage~1, overlap~0)
+  [sanity] real-vs-real (official): FID=-0.000 D=1.000 C=1.000  (expect ~0, ~1, ~1)
+
+===== SCORES (OFFICIAL torchmetrics+prdc) =====
+  FID      145.420   (lower better)
+  Density  0.077   (higher better)
+  Coverage 0.097   (higher better)
+[eval] wrote 8 real|gen pairs -> outputs_full_plan_id_scale30k/samples

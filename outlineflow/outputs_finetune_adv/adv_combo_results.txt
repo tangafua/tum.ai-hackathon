@@ -1,0 +1,6 @@
+config, FID, Density, Coverage, gen_rooms (adversarial model combos)
+adv+grid16+churn0, 133.482, 0.095, 0.110, 27.36
+adv+grid12+churn0.3, 133.356, 0.090, 0.098, 23.48
+adv+grid14+churn0.3, 136.731, 0.091, 0.095, 25.71
+adv+grid16+steps200+churn0.3, 140.354, 0.090, 0.097, 27.34
+DONE

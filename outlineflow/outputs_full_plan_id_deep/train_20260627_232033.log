@@ -1,0 +1,32 @@
+[data] loading MSD from /root/jiahua_code/tum.ai-hackathon/mds_V2_5.372k.csv (group=plan_id, limit 6000)...
+[msd] reading /root/jiahua_code/tum.ai-hackathon/mds_V2_5.372k.csv (group=plan_id, residential_only=False)...
+[msd] 5372 plans | K=13 | n_gen_classes=10 | n_max=156 | rooms/plan 37.8±25.7 (median 31, max 400)
+[data] X=(4372, 156, 20) OUT=(4372, 128, 4)  channel stds (should be ~1 for present rooms): [1.   1.   0.99 1.   0.69 0.72]
+[model] OutlineFlow d_model=128 L=8 params=2.51M device=cuda
+  step     0/15000  loss 0.6219  lr 1.00e-06  (10s)
+  step   750/15000  loss 0.1776  lr 1.99e-04  (22s)
+  step  1500/15000  loss 0.1589  lr 1.96e-04  (33s)
+  step  2250/15000  loss 0.1580  lr 1.91e-04  (46s)
+  [checkpoint] saved /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt_step2500.pt
+  step  3000/15000  loss 0.1554  lr 1.83e-04  (62s)
+  step  3750/15000  loss 0.1502  lr 1.73e-04  (77s)
+  step  4500/15000  loss 0.1487  lr 1.61e-04  (92s)
+  [checkpoint] saved /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt_step5000.pt
+  step  5250/15000  loss 0.1498  lr 1.48e-04  (108s)
+  step  6000/15000  loss 0.1470  lr 1.33e-04  (125s)
+  step  6750/15000  loss 0.1473  lr 1.18e-04  (139s)
+  [checkpoint] saved /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt_step7500.pt
+  step  7500/15000  loss 0.1451  lr 1.02e-04  (154s)
+  step  8250/15000  loss 0.1443  lr 8.62e-05  (168s)
+  step  9000/15000  loss 0.1419  lr 7.07e-05  (180s)
+  step  9750/15000  loss 0.1421  lr 5.59e-05  (191s)
+  [checkpoint] saved /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt_step10000.pt
+  step 10500/15000  loss 0.1426  lr 4.23e-05  (203s)
+  step 11250/15000  loss 0.1421  lr 3.00e-05  (214s)
+  step 12000/15000  loss 0.1457  lr 1.96e-05  (226s)
+  [checkpoint] saved /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt_step12500.pt
+  step 12750/15000  loss 0.1433  lr 1.12e-05  (237s)
+  step 13500/15000  loss 0.1422  lr 5.03e-06  (249s)
+  step 14250/15000  loss 0.1404  lr 1.26e-06  (260s)
+  step 14999/15000  loss 0.1412  lr 2.25e-12  (272s)
+[done] final loss 0.1412  -> /root/jiahua_code/tum.ai-hackathon/outlineflow/outputs_full_plan_id_deep/ckpt.pt

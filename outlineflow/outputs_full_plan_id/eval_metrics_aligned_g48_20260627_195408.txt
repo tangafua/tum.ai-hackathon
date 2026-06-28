@@ -1,0 +1,35 @@
+======== OutlineFlow Eval (small model + ALIGN post-process C, grid=48) ========
+date: Sat Jun 27 19:54:08 UTC 2026
+ckpt: outputs_full_plan_id/ckpt.pt | decoder: rect | align: ON grid=48
+metric: official InceptionV3 FID on rendered images
+===============================================================================
+
+[eval] 600 held outlines | device=cuda | decoder=rect | features=inception
+[calib] target count 38.1 -> presence_thresh -1.040 (decoded ~34.6 on subsample)
+[align] grid-snapped layouts (grid=48)
+[diag] rooms/plan  real 38.07±23.73  gen 32.52±5.65
+[diag] generated interior coverage 0.999  overlap 0.0000  (target coverage~1, overlap~0)
+Traceback (most recent call last):
+  File "/root/jiahua_code/tum.ai-hackathon/outlineflow/sample_eval.py", line 165, in <module>
+    main()
+  File "/root/jiahua_code/tum.ai-hackathon/outlineflow/sample_eval.py", line 138, in main
+    rr = metrics.official_eval(real_imgs, real_imgs.copy(), CFG, device=metric_dev)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/jiahua_code/tum.ai-hackathon/outlineflow/metrics.py", line 142, in official_eval
+    fid_val = float(fid.compute())
+                    ^^^^^^^^^^^^^
+  File "/root/torch-rocm/lib/python3.12/site-packages/torchmetrics/metric.py", line 699, in wrapped_func
+    value = _squeeze_if_scalar(compute(*args, **kwargs))
+                               ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/torch-rocm/lib/python3.12/site-packages/torchmetrics/image/fid.py", line 420, in compute
+    return _compute_fid(mean_real.squeeze(0), cov_real, mean_fake.squeeze(0), cov_fake).to(self.orig_dtype)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/torch-rocm/lib/python3.12/site-packages/torchmetrics/image/fid.py", line 192, in _compute_fid
+    c = torch.linalg.eigvals(sigma1 @ sigma2).sqrt().real.sum(dim=-1)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.AcceleratorError: HIP error: out of memory
+Search for `hipErrorOutOfMemory' in https://rocm.docs.amd.com/projects/HIP/en/latest/index.html for more information.
+HIP kernel errors might be asynchronously reported at some other API call, so the stacktrace below might be incorrect.
+For debugging consider passing AMD_SERIALIZE_KERNEL=3
+Compile with `TORCH_USE_HIP_DSA` to enable device-side assertions.
+

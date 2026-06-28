@@ -1,0 +1,27 @@
+[data] loading real plans...
+[msd] reading /root/jiahua_code/tum.ai-hackathon/mds_V2_5.372k.csv (group=plan_id, residential_only=False)...
+[data] real torch.Size([2500, 156, 20]), outlines torch.Size([2500, 128, 4])
+[data] generating fake layouts from the flow model...
+[critic] params=1.62M
+  step     0/8000  loss 1.3684  acc 0.617  (8s)
+  step   400/8000  loss 0.5388  acc 0.879  (18s)
+  step   800/8000  loss 0.4309  acc 0.900  (28s)
+  step  1200/8000  loss 0.4157  acc 0.906  (39s)
+  step  1600/8000  loss 0.4313  acc 0.906  (49s)
+  step  2000/8000  loss 0.3854  acc 0.914  (60s)
+  step  2400/8000  loss 0.4533  acc 0.895  (70s)
+  step  2800/8000  loss 0.3728  acc 0.896  (80s)
+  step  3200/8000  loss 0.3196  acc 0.918  (91s)
+  step  3600/8000  loss 0.3917  acc 0.910  (101s)
+  step  4000/8000  loss 0.3605  acc 0.906  (112s)
+  step  4400/8000  loss 0.3201  acc 0.912  (122s)
+  step  4800/8000  loss 0.3947  acc 0.908  (132s)
+  step  5200/8000  loss 0.3303  acc 0.932  (143s)
+  step  5600/8000  loss 0.3576  acc 0.920  (153s)
+  step  6000/8000  loss 0.3182  acc 0.930  (164s)
+  step  6400/8000  loss 0.3155  acc 0.920  (174s)
+  step  6800/8000  loss 0.2839  acc 0.928  (184s)
+  step  7200/8000  loss 0.2756  acc 0.934  (195s)
+  step  7600/8000  loss 0.3208  acc 0.924  (205s)
+  step  7999/8000  loss 0.2691  acc 0.926  (216s)
+[done] saved outputs_full_plan_id/energy_critic_strong.pt

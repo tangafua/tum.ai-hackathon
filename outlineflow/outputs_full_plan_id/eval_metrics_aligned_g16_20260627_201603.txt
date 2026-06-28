@@ -1,0 +1,13 @@
+== align grid=16 | small model | metrics CPU ==
+[eval] 600 held outlines | device=cuda | decoder=rect | features=inception
+[calib] target count 38.1 -> presence_thresh -1.040 (decoded ~34.6 on subsample)
+[align] grid-snapped layouts (grid=16)
+[diag] rooms/plan  real 38.07±23.73  gen 28.65±6.23
+[diag] generated interior coverage 0.999  overlap 0.0001  (target coverage~1, overlap~0)
+  [sanity] real-vs-real (official): FID=-0.000 D=1.000 C=1.000  (expect ~0, ~1, ~1)
+
+===== SCORES (OFFICIAL torchmetrics+prdc) =====
+  FID      131.524   (lower better)
+  Density  0.091   (higher better)
+  Coverage 0.098   (higher better)
+[eval] wrote 6 real|gen pairs -> outputs_full_plan_id/samples

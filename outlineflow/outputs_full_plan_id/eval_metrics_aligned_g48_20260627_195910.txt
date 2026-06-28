@@ -1,0 +1,18 @@
+======== OutlineFlow Eval (small model + ALIGN post-process C, grid=48) ========
+date: Sat Jun 27 19:59:10 UTC 2026
+ckpt: outputs_full_plan_id/ckpt.pt | decoder: rect | align: ON grid=48 | metrics: CPU
+metric: official InceptionV3 FID on rendered images
+===============================================================================
+
+[eval] 600 held outlines | device=cuda | decoder=rect | features=inception
+[calib] target count 38.1 -> presence_thresh -1.040 (decoded ~34.6 on subsample)
+[align] grid-snapped layouts (grid=48)
+[diag] rooms/plan  real 38.07±23.73  gen 32.52±5.65
+[diag] generated interior coverage 0.999  overlap 0.0000  (target coverage~1, overlap~0)
+  [sanity] real-vs-real (official): FID=-0.000 D=1.000 C=1.000  (expect ~0, ~1, ~1)
+
+===== SCORES (OFFICIAL torchmetrics+prdc) =====
+  FID      165.925   (lower better)
+  Density  0.093   (higher better)
+  Coverage 0.063   (higher better)
+[eval] wrote 12 real|gen pairs -> outputs_full_plan_id/samples

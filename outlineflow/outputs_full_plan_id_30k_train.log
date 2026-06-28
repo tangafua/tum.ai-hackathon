@@ -1,0 +1,32 @@
+[data] loading MSD from /root/jiahua_code/tum.ai-hackathon/mds_V2_5.372k.csv (group=plan_id, limit 6000)...
+[msd] reading /root/jiahua_code/tum.ai-hackathon/mds_V2_5.372k.csv (group=plan_id, residential_only=False)...
+[msd] 5372 plans | K=13 | n_gen_classes=10 | n_max=156 | rooms/plan 37.8±25.7 (median 31, max 400)
+[data] X=(4372, 156, 20) OUT=(4372, 128, 4)  channel stds (should be ~1 for present rooms): [1.   1.   0.99 1.   0.69 0.72]
+[model] OutlineFlow d_model=128 L=4 params=1.33M device=cuda
+  step     0/30000  loss 0.6219  lr 1.00e-06  (10s)
+  step  1500/30000  loss 0.1625  lr 1.99e-04  (23s)
+  step  3000/30000  loss 0.1583  lr 1.96e-04  (37s)
+  step  4500/30000  loss 0.1509  lr 1.90e-04  (50s)
+  [checkpoint] saved outputs_full_plan_id_30k/ckpt_step5000.pt
+  step  6000/30000  loss 0.1487  lr 1.82e-04  (63s)
+  step  7500/30000  loss 0.1471  lr 1.72e-04  (76s)
+  step  9000/30000  loss 0.1438  lr 1.60e-04  (89s)
+  [checkpoint] saved outputs_full_plan_id_30k/ckpt_step10000.pt
+  step 10500/30000  loss 0.1445  lr 1.47e-04  (103s)
+  step 12000/30000  loss 0.1478  lr 1.32e-04  (116s)
+  step 13500/30000  loss 0.1440  lr 1.17e-04  (129s)
+  [checkpoint] saved outputs_full_plan_id_30k/ckpt_step15000.pt
+  step 15000/30000  loss 0.1425  lr 1.01e-04  (142s)
+  step 16500/30000  loss 0.1435  lr 8.53e-05  (155s)
+  step 18000/30000  loss 0.1410  lr 6.99e-05  (168s)
+  step 19500/30000  loss 0.1391  lr 5.53e-05  (181s)
+  [checkpoint] saved outputs_full_plan_id_30k/ckpt_step20000.pt
+  step 21000/30000  loss 0.1413  lr 4.17e-05  (194s)
+  step 22500/30000  loss 0.1411  lr 2.97e-05  (207s)
+  step 24000/30000  loss 0.1414  lr 1.93e-05  (220s)
+  [checkpoint] saved outputs_full_plan_id_30k/ckpt_step25000.pt
+  step 25500/30000  loss 0.1418  lr 1.10e-05  (233s)
+  step 27000/30000  loss 0.1418  lr 4.96e-06  (247s)
+  step 28500/30000  loss 0.1411  lr 1.25e-06  (260s)
+  step 29999/30000  loss 0.1416  lr 5.56e-13  (273s)
+[done] final loss 0.1416  -> outputs_full_plan_id_30k/ckpt.pt

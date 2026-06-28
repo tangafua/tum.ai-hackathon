@@ -1,0 +1,23 @@
+config, FID, Density, Coverage, gen_rooms   (start Sat Jun 27 23:55:40 UTC 2026)
+REFERENCE: align g16 churn0=131.5/0.091/0.098 ; churn0.3=133.6/0.094/0.113 ; churn0.6=137.0/0.094/0.122
+churn0.2, 132.897, 0.082, 0.115, 28.20
+churn0.4, 137.122, 0.090, 0.090, 28.32
+churn0.5, 136.847, 0.085, 0.100, 28.32
+churn0.8, 144.469, 0.072, 0.090, 28.07
+grid12+churn0.4, 127.738, 0.072, 0.095, 23.77
+grid20+churn0.4, 149.005, 0.081, 0.087, 29.61
+steps200+churn0.3, 134.412, 0.085, 0.117, 28.70
+rerank4+churn0.3, 136.716, 0.087, 0.098, 26.98
+rerank8+det, ERR, ERR, ERR, ERR
+[phase1 done Sun Jun 28 00:33:00 UTC 2026]
+strongcrit+guid0.25, 133.479, 0.090, 0.098, 27.84
+strongcrit+rerank6+churn0.3, ERR, ERR, ERR, ERR
+[phase2 done Sun Jun 28 00:42:08 UTC 2026]
+small30k+churn0.3, 135.043, 0.085, 0.095, 29.34
+small30k+churn0.6, 138.902, 0.083, 0.102, 29.26
+[phase3 done Sun Jun 28 00:57:04 UTC 2026]
+adv+churn0, 133.482, 0.095, 0.110, 27.36
+adv+churn0.3, 139.784, 0.087, 0.098, 27.16
+adv+churn0.6, 139.922, 0.088, 0.100, 27.43
+[phase4 done Sun Jun 28 01:11:27 UTC 2026]
+ALL DONE Sun Jun 28 01:11:27 UTC 2026

@@ -1,0 +1,6 @@
+seed, FID, Density, Coverage (energy-guidance g0.25, align g16, no churn)
+42, 135.098, 0.093, 0.112
+123, 137.108, 0.094, 0.092
+7, 136.163, 0.085, 0.105
+MEAN(n=3): FID 136.1 | Den 0.091 | Cov 0.103
+DONE

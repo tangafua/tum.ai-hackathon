@@ -1,0 +1,4 @@
+guidance, FID, Density, Coverage, gen_rooms (low-guidance refine)
+0.25, 135.098, 0.093, 0.112, 27.90
+0.5, 135.327, 0.092, 0.108, 27.12
+DONE

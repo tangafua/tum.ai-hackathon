@@ -1,0 +1,17 @@
+================ OutlineFlow Eval (full data, plan_id, 15000 steps) ================
+date: Sat Jun 27 19:21:54 UTC 2026
+ckpt: outputs_full_plan_id/ckpt.pt   |   decoder: VORONOI
+metric: official InceptionV3 FID on rendered images (torchmetrics + prdc)
+===================================================================================
+
+[eval] 600 held outlines | device=cuda | decoder=voronoi | features=inception
+[calib] target count 38.1 -> presence_thresh 0.986 (decoded ~38.1 on subsample)
+[diag] rooms/plan  real 38.07±23.73  gen 40.81±36.62
+[diag] generated interior coverage 1.000  overlap 0.0000  (target coverage~1, overlap~0)
+  [sanity] real-vs-real (official): FID=-0.000 D=1.000 C=1.000  (expect ~0, ~1, ~1)
+
+===== SCORES (OFFICIAL torchmetrics+prdc) =====
+  FID      268.533   (lower better)
+  Density  0.024   (higher better)
+  Coverage 0.013   (higher better)
+[eval] wrote 12 real|gen pairs -> outputs_full_plan_id/samples
