@@ -23,6 +23,31 @@ Net: **FID −19%, Coverage +66%** over the raw baseline. Shipped in `generate.p
 
 ---
 
+## Core insight
+
+> **The bottleneck is the L2 training objective, not the model class or its capacity.**
+
+Flow matching and diffusion both minimize an MSE that drives the network toward the
+**conditional mean** of plausible layouts. Given one outline there are many valid room
+arrangements, but the mean of them is a single blurred "average" plan — so the model's
+outputs collapse in variance (room-count std ±6 vs real ±24) and miss most of the real
+distribution (Coverage ≈ 0.1 vs 1.0). This is why **every fix that adds capacity or
+changes the paradigm fails**: bigger/deeper/longer models, scale conditioning, loss
+re-weighting, and a full DDPM all inherit the same averaging and do not move the metrics.
+
+The **only robust way to recover diversity is sampling-time stochasticity** (`churn`,
+i.e. SDE/ancestral sampling): injecting noise during integration lets each sample leave
+the mean trajectory and spread back toward the real manifold — lifting Coverage with a
+small FID cost, no retraining needed. EBM add-ons (guidance, energy-weighting, adversarial
+fine-tune, best-of-N) look promising on a single seed but **wash out or interfere under
+multi-seed evaluation** — which itself is a key lesson: with a stochastic pipeline,
+single-run numbers are unreliable and every claim must be multi-seed averaged.
+
+Practical ranking that held up: **align (FID) + churn (Coverage)** on a pure flow-matching
+model beats diffusion and every EBM variant tried.
+
+---
+
 ## 2. Model
 
 From-scratch **rectified flow matching** (pure flow matching, no diffusion/EBM in the base):
@@ -108,7 +133,8 @@ Rigorously tested; none beats the simple recipe (most washed out under multi-see
 - **Energy-weighted FM (EWFM)**: re-weighting rare tails can't beat mean-regression. No gain.
 - **Forcing fewer rooms**: monotonically worse (FID 161→290 as target count drops).
 - **Energy guidance**: 3-seed mean Cov 0.103 vs 0.098 — within noise; dominated by churn.
-- **Energy guidance + churn**: interfere (3-seed Cov ~0.102 < churn-alone 0.111).
+- **Energy guidance + churn** (matched critic, 3-seed): actively *interferes* — Cov 0.102
+  (guid 0.15) / 0.094 (guid 0.25), both < churn-alone 0.111; more guidance = worse.
 - **Best-of-N critic re-rank**: no gain (and OOM at high N).
 
 **Takeaway:** the bottleneck is the L2 training objective, not model class or capacity.
