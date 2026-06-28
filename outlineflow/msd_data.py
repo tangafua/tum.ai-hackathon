@@ -102,10 +102,14 @@ def _build_sample(rows_geom, rows_type):
 
 
 def load_msd_samples(csv_path, cfg, limit=None, group=None, set_cfg=True,
-                     residential_only=None, seed=None):
+                     residential_only=None, seed=None, tag_parent=None):
     """Read up to `limit` plans from the MSD CSV -> list of sample dicts.
 
     group : "plan_id" (default, brief) or "unit_id" (per-apartment).
+    tag_parent : optional coarser id column (e.g. "plan_id" when group=="unit_id")
+        to record on each sample as s[tag_parent]; each sample also gets s[group]
+        (its own group-key value). Used by area_eval.py to merge units back into
+        their floor.  Default None leaves the sample contract untouched.
     If set_cfg, updates cfg.n_max (99th-pct room count + margin) from the data
     and records cfg.msd_group; cfg.k stays fixed at the locked taxonomy size.
     Returns (samples, ROOMTYPE_TO_ID).
@@ -121,7 +125,10 @@ def load_msd_samples(csv_path, cfg, limit=None, group=None, set_cfg=True,
     usecols = [group, "entity_type", "roomtype", "geom"]
     if residential_only:
         usecols.append("unit_usage")
-    print(f"[msd] reading {csv_path} (group={group}, residential_only={residential_only})...")
+    if tag_parent and tag_parent not in usecols:
+        usecols.append(tag_parent)
+    print(f"[msd] reading {csv_path} (group={group}, residential_only={residential_only}"
+          f"{', tag_parent='+tag_parent if tag_parent else ''})...")
     df = pd.read_csv(csv_path, usecols=usecols)
     df = df[df["entity_type"] == "area"]
     if residential_only:
@@ -137,9 +144,12 @@ def load_msd_samples(csv_path, cfg, limit=None, group=None, set_cfg=True,
     df = df[df[group].isin(keep)]
 
     samples = []
-    for _, grp in df.groupby(group, sort=True):
+    for key, grp in df.groupby(group, sort=True):
         s = _build_sample(grp["geom"].tolist(), grp["roomtype"].tolist())
         if s is not None:
+            if tag_parent:
+                s[group] = key
+                s[tag_parent] = grp[tag_parent].iloc[0]
             samples.append(s)
 
     if not samples:

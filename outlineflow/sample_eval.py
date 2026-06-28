@@ -39,6 +39,109 @@ def load(ckpt_path):
     return ema.make_model(model), ck["stats"]
 
 
+def generate_layouts(model, stats, outlines, real_plans, args, dev):
+    """Sample tokens for `outlines`, calibrate/count-match, decode + optional align.
+
+    The exact generation path used by the CLI, factored out so area_eval.py
+    produces IDENTICAL per-outline layouts (same guidance / count_match /
+    count_scale / decoder / align behavior).  `real_plans` (list of (rooms,
+    outline)) supplies only the real MEAN count used by --calibrate / --count_match
+    (leak-free).  Returns a list of decoded room-lists, one per outline.
+    """
+    decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
+
+    # condition tensors
+    OUT = np.stack([params.sample_outline_points(o, CFG.p_outline) for o in outlines])
+    Ot = torch.from_numpy(OUT).to(dev)
+    n_cond = getattr(CFG, "n_cond", 0)
+    Ct = None
+    if n_cond:
+        COND = np.stack([params.outline_cond(o, CFG) for o in outlines])
+        Ct = torch.from_numpy(COND).to(dev)
+
+    # 1) sample all raw token tensors
+    steps = args.sample_steps or CFG.sample_steps
+    heun_last = steps if args.full_heun else 5
+    is_edm = getattr(CFG, "objective", "rectflow") == "edm"
+    print(f"[sample] objective={getattr(CFG,'objective','rectflow')} steps={steps} "
+          f"heun_last={heun_last} guidance={args.guidance}")
+    raw = []
+    for i in range(0, len(outlines), args.batch):
+        cb = Ct[i:i + args.batch] if Ct is not None else None
+        ob = Ot[i:i + args.batch]
+        if is_edm:
+            xb = edm_sample(model, ob, CFG, steps=steps, cond=cb, guidance=args.guidance)
+        else:
+            xb = sample(model, ob, CFG, cond=cb, steps=steps,
+                        heun_last=heun_last, guidance=args.guidance, churn=args.churn)
+        raw.extend(list(xb.cpu().numpy()))
+
+    # 2) per-outline top-K (C1) or a single calibrated presence threshold
+    topk_list = None
+    if args.count_match:
+        real_counts_fit = np.array([len(r) for r, _ in real_plans], dtype=float)
+        target = float(real_counts_fit.mean())
+        areas = np.array([float(o.area) for o in outlines])
+        if args.count_stochastic:
+            real_areas_fit = np.array([float(o.area) for _, o in real_plans])
+            lx, ly = np.log(real_areas_fit + 1e-9), np.log(real_counts_fit + 1e-9)
+            b, a = np.polyfit(lx, ly, 1)
+            s = float((ly - (a + b * lx)).std())
+            rng = np.random.default_rng(args.seed)
+            mu = a + b * np.log(areas + 1e-9) + np.log(max(args.count_scale, 1e-9))
+            ks = np.round(np.exp(mu + s * rng.standard_normal(len(areas)))).astype(int)
+            print(f"[count_match] STOCHASTIC log-count~log-area slope={b:.2f} "
+                  f"resid_std={s:.2f} -> K mean {ks.mean():.2f}±{ks.std():.2f} "
+                  f"(real std {real_counts_fit.std():.1f})")
+        else:
+            ks = np.round(args.count_scale * target * areas / areas.mean()).astype(int)
+            print(f"[count_match] target mean {target:.1f} -> per-outline K "
+                  f"mean {ks.mean():.2f}±{ks.std():.2f} (range {ks.min()}-{ks.max()})")
+        ks = np.clip(ks, 1, CFG.n_max)
+        topk_list = ks
+
+    thresh = 0.0
+    if args.calibrate and not args.count_match:
+        target = float(np.mean([len(r) for r, _ in real_plans]))
+        sub = list(zip(raw, outlines))[:min(40, len(raw))]
+
+        def mean_count(t):
+            return float(np.mean([len(decode(x, o, stats, CFG, presence_thresh=t))
+                                  for x, o in sub]))
+
+        lo = float(min(x[:, 0].min() for x in raw))
+        hi = float(max(x[:, 0].max() for x in raw))
+        for _ in range(18):                       # binary search (count decreases with t)
+            mid = 0.5 * (lo + hi)
+            if mean_count(mid) > target:
+                lo = mid
+            else:
+                hi = mid
+        thresh = 0.5 * (lo + hi)
+        floor = CFG.presence_thresh_floor
+        if thresh < floor:
+            print(f"[calib] calibrated thresh {thresh:.3f} below floor {floor:.2f} "
+                  f"-> clamped (model under-separates presence)")
+            thresh = floor
+        print(f"[calib] target count {target:.1f} -> presence_thresh {thresh:.3f} "
+              f"(decoded ~{mean_count(thresh):.1f} on subsample)")
+
+    # 3) decode + postprocess to valid layouts
+    if topk_list is not None:
+        gen_rooms = [decode(x, o, stats, CFG, top_k=int(k))
+                     for x, o, k in zip(raw, outlines, topk_list)]
+    else:
+        gen_rooms = [decode(x, o, stats, CFG, presence_thresh=thresh)
+                     for x, o in zip(raw, outlines)]
+
+    # 3b) optional align post-process (jiahua FID lever): grid-snap to building axes
+    if args.align:
+        gen_rooms = [align_layout(r, o, CFG, grid=args.grid)
+                     for r, o in zip(gen_rooms, outlines)]
+        print(f"[align] grid-snapped layouts (grid={args.grid})")
+    return gen_rooms
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out_dir", default=CFG.out_dir,
@@ -111,108 +214,11 @@ def main():
     print(f"[eval] {len(held)} held outlines | device={dev} | decoder={args.decoder} | "
           f"features={'inception' if args.inception else 'phi-proxy'}")
 
-    # condition tensors
-    OUT = np.stack([params.sample_outline_points(o, CFG.p_outline) for o in outlines])
-    Ot = torch.from_numpy(OUT).to(dev)
-    n_cond = getattr(CFG, "n_cond", 0)
-    Ct = None
-    if n_cond:
-        COND = np.stack([params.outline_cond(o, CFG) for o in outlines])
-        Ct = torch.from_numpy(COND).to(dev)
-
-    # 1) sample all raw token tensors
-    steps = args.sample_steps or CFG.sample_steps
-    heun_last = steps if args.full_heun else 5
-    is_edm = getattr(CFG, "objective", "rectflow") == "edm"
-    print(f"[sample] objective={getattr(CFG,'objective','rectflow')} steps={steps} "
-          f"heun_last={heun_last} guidance={args.guidance}")
-    raw = []
-    for i in range(0, len(outlines), args.batch):
-        cb = Ct[i:i + args.batch] if Ct is not None else None
-        ob = Ot[i:i + args.batch]
-        if is_edm:
-            xb = edm_sample(model, ob, CFG, steps=steps, cond=cb, guidance=args.guidance)
-        else:
-            xb = sample(model, ob, CFG, cond=cb, steps=steps,
-                        heun_last=heun_last, guidance=args.guidance, churn=args.churn)
-        raw.extend(list(xb.cpu().numpy()))
-
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
 
-    # 2) calibrate one global presence threshold so the generated room-count
-    #    distribution matches the real mean.  We calibrate on the FINAL decoded
-    #    count (not raw present-slots), so it accounts for rooms the rect decoder
-    #    drops in overlap-resolve / sliver-drop.  Decoder-agnostic; per-outline
-    #    variation is preserved (bigger outlines fire more slots).
-    # C1: per-outline top-K from outline area (leak-free: uses only the real MEAN
-    # count -- already used by --calibrate -- scaled by each outline's own area).
-    topk_list = None
-    if args.count_match:
-        real_counts_fit = np.array([len(r) for r, _ in real_plans], dtype=float)
-        target = float(real_counts_fit.mean())
-        areas = np.array([float(o.area) for o in outlines])
-        if args.count_stochastic:
-            # C2: fit log-count ~ log-area on the real held plans, then SAMPLE per-outline
-            # K with the real residual spread -> recover count variance (real std ~24 vs
-            # deterministic ~6) -> Coverage.  Uses only the real target distribution (same
-            # spirit as --calibrate / count_match mean), no per-sample leak.
-            real_areas_fit = np.array([float(o.area) for _, o in real_plans])
-            lx, ly = np.log(real_areas_fit + 1e-9), np.log(real_counts_fit + 1e-9)
-            b, a = np.polyfit(lx, ly, 1)
-            s = float((ly - (a + b * lx)).std())
-            rng = np.random.default_rng(args.seed)
-            mu = a + b * np.log(areas + 1e-9) + np.log(max(args.count_scale, 1e-9))
-            ks = np.round(np.exp(mu + s * rng.standard_normal(len(areas)))).astype(int)
-            print(f"[count_match] STOCHASTIC log-count~log-area slope={b:.2f} "
-                  f"resid_std={s:.2f} -> K mean {ks.mean():.2f}±{ks.std():.2f} "
-                  f"(real std {real_counts_fit.std():.1f})")
-        else:
-            ks = np.round(args.count_scale * target * areas / areas.mean()).astype(int)
-            print(f"[count_match] target mean {target:.1f} -> per-outline K "
-                  f"mean {ks.mean():.2f}±{ks.std():.2f} (range {ks.min()}-{ks.max()})")
-        ks = np.clip(ks, 1, CFG.n_max)
-        topk_list = ks
-
-    thresh = 0.0
-    if args.calibrate and not args.count_match:
-        target = float(np.mean([len(r) for r, _ in real_plans]))
-        sub = list(zip(raw, outlines))[:min(40, len(raw))]
-
-        def mean_count(t):
-            return float(np.mean([len(decode(x, o, stats, CFG, presence_thresh=t))
-                                  for x, o in sub]))
-
-        lo = float(min(x[:, 0].min() for x in raw))
-        hi = float(max(x[:, 0].max() for x in raw))
-        for _ in range(18):                       # binary search (count decreases with t)
-            mid = 0.5 * (lo + hi)
-            if mean_count(mid) > target:
-                lo = mid                          # too many rooms -> raise threshold
-            else:
-                hi = mid
-        thresh = 0.5 * (lo + hi)
-        # hard floor: never drop below the padding baseline, else noise slots get
-        # admitted as rooms and gap-fill masks the collapse (the -1.031 pathology).
-        floor = CFG.presence_thresh_floor
-        if thresh < floor:
-            print(f"[calib] calibrated thresh {thresh:.3f} below floor {floor:.2f} "
-                  f"-> clamped (model under-separates presence)")
-            thresh = floor
-        print(f"[calib] target count {target:.1f} -> presence_thresh {thresh:.3f} "
-              f"(decoded ~{mean_count(thresh):.1f} on subsample)")
-
-    # 3) decode + postprocess to valid layouts
-    if topk_list is not None:
-        gen_plans = [(decode(x, o, stats, CFG, top_k=int(k)), o)
-                     for x, o, k in zip(raw, outlines, topk_list)]
-    else:
-        gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
-                     for x, o in zip(raw, outlines)]
-
-    # 3b) optional align post-process (jiahua FID lever): grid-snap to building axes
-    if args.align:
-        gen_plans = [(align_layout(r, o, CFG, grid=args.grid), o) for r, o in gen_plans]
-        print(f"[align] grid-snapped layouts (grid={args.grid})")
+    # sample + calibrate/count_match + decode + optional align (shared with area_eval)
+    gen_rooms = generate_layouts(model, stats, outlines, real_plans, args, dev)
+    gen_plans = list(zip(gen_rooms, outlines))
 
     # diagnostics
     real_counts = np.array([len(r) for r, _ in real_plans])
