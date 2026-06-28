@@ -55,7 +55,7 @@ def fm_loss(model, x1, outline, cfg, cond=None, cfg_drop=0.0):
 
 @torch.no_grad()
 def sample(model, outline, cfg, steps=None, heun_last=5, generator=None,
-           cond=None, guidance=1.0):
+           cond=None, guidance=1.0, churn=0.0):
     """Integrate the velocity field from noise (t=0) to data (t=1).
 
     Pass ``generator`` (a torch.Generator) to make the initial noise -- and hence
@@ -90,7 +90,8 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None,
 
     dt = 1.0 / steps
     for i in range(steps):
-        t = torch.full((B,), i * dt, device=dev)
+        tval = i * dt
+        t = torch.full((B,), tval, device=dev)
         v = vel(x, t)
         if i >= steps - heun_last:                           # Heun corrector near t=1
             t2 = torch.full((B,), min((i + 1) * dt, 1.0), device=dev)
@@ -98,6 +99,10 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None,
             x = x + 0.5 * (v + v2) * dt
         else:
             x = x + v * dt
+        if churn > 0.0 and i < steps - heun_last:            # SDE-style noise injection
+            # noise scaled by remaining time -> more diversity early, settle near t=1
+            # (jiahua's Coverage lever: escapes the L2 mean-trajectory collapse)
+            x = x + churn * (1.0 - tval) * (dt ** 0.5) * torch.randn_like(x)
     return x
 
 

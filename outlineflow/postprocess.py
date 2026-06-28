@@ -13,8 +13,9 @@ Output: list of (shapely (Multi)Polygon, type_id) with union(rooms) == outline
 """
 from __future__ import annotations
 import numpy as np
+from shapely import affinity
 from shapely.ops import unary_union, voronoi_diagram
-from shapely.geometry import MultiPoint, Point
+from shapely.geometry import MultiPoint, Point, Polygon
 import params
 
 
@@ -152,6 +153,75 @@ def voronoi_layout(x1_np, outline, stats, cfg, presence_thresh=0.0, top_k=None):
                     + (s[1] - c.centroid.y) ** 2)[2]
         rooms.append((c, int(t)))
     return rooms or [(outline, int(seeds[0][2]))]
+
+
+def _snap_coords(poly, ox, oy, cell):
+    """Quantize a polygon's vertices to an axis-aligned grid of step `cell`."""
+    def q(coords):
+        return [(ox + round((x - ox) / cell) * cell,
+                 oy + round((y - oy) / cell) * cell) for x, y in coords]
+    p = Polygon(q(poly.exterior.coords), [q(r.coords) for r in poly.interiors])
+    return p if p.is_valid else p.buffer(0)
+
+
+def align_layout(rooms, outline, cfg, grid=48):
+    """Post-process (ported from jiahua): snap room edges to a grid along the
+    building's own axes, then re-partition the outline (overlap-resolve + gap-fill)
+    so it stays gap-free.  Real Swiss plans are clean rectilinear tilings; raw
+    decoded rooms jitter into L-shapes -> snapping to a coarse grid in the outline's
+    rotated frame removes that jitter and aligns shared edges, reading as more
+    regular after rasterisation.  Deterministic; preserves room count.  (FID lever)
+    """
+    if not rooms or grid <= 0:
+        return rooms
+    base = outline_axis_angle(outline)
+    deg = float(np.degrees(base))
+    origin = outline.centroid
+    o_rot = _clean(affinity.rotate(outline, -deg, origin=origin))
+    minx, miny, maxx, maxy = o_rot.bounds
+    cell = max(maxx - minx, maxy - miny) / float(grid)
+    if cell <= 0:
+        return rooms
+
+    # snap each room in the axis-aligned frame, clip back to the (rotated) outline
+    snapped = []
+    for poly, t in rooms:
+        pr = _clean(affinity.rotate(poly, -deg, origin=origin))
+        for c in (pr.geoms if pr.geom_type == "MultiPolygon" else [pr]):
+            if c.is_empty or c.area <= 0:
+                continue
+            cs = _largest(_clean(_snap_coords(c, minx, miny, cell).intersection(o_rot)))
+            if not cs.is_empty and cs.area > 0:
+                snapped.append([cs, int(t), cs.area])
+    if not snapped:
+        return rooms
+
+    # snapping can introduce overlaps -> greedy resolve (largest wins), like decode
+    snapped.sort(key=lambda r: r[2], reverse=True)
+    resolved, u = [], None
+    for poly, t, _a in snapped:
+        if u is not None:
+            poly = _largest(_clean(poly.difference(u)))
+        if poly.is_empty or poly.area <= 0:
+            continue
+        resolved.append([poly, t])
+        u = poly if u is None else _clean(unary_union([u, poly]))
+    min_area = cfg.min_area_frac * o_rot.area
+    resolved = [r for r in resolved if r[0].area >= min_area] or resolved[:1]
+
+    # gap-fill leftover back into nearest room (keep union == outline)
+    leftover = _clean(o_rot.difference(unary_union([r[0] for r in resolved])))
+    if not leftover.is_empty and leftover.area > 1e-9:
+        comps = list(leftover.geoms) if leftover.geom_type == "MultiPolygon" else [leftover]
+        for comp in comps:
+            if comp.is_empty or comp.area <= 0:
+                continue
+            j = min(range(len(resolved)), key=lambda i: resolved[i][0].distance(comp))
+            resolved[j][0] = _clean(unary_union([resolved[j][0], comp]))
+
+    # rotate back to world frame
+    return [(_clean(affinity.rotate(r[0], deg, origin=origin)), int(r[1]))
+            for r in resolved]
 
 
 def coverage_overlap(rooms, outline):

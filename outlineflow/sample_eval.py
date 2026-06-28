@@ -17,7 +17,7 @@ import metrics
 from cfg import CFG, seed_everything
 from model import OutlineFlow
 from flow import EMA, sample, edm_sample
-from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap
+from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap, align_layout
 from render import render_plan
 
 
@@ -72,6 +72,23 @@ def main():
     ap.add_argument("--count_scale", type=float, default=1.0,
                     help="C1: multiply per-outline K (the rect decoder drops ~2 rooms/"
                          "plan in overlap-resolve, so >1 compensates)")
+    ap.add_argument("--align", action="store_true",
+                    help="jiahua FID lever: grid-snap rooms to building axes + "
+                         "re-partition before scoring (deterministic, preserves count)")
+    ap.add_argument("--grid", type=int, default=48,
+                    help="grid divisions for --align (lower = coarser/more regular)")
+    ap.add_argument("--churn", type=float, default=0.0,
+                    help="jiahua Coverage lever: SDE noise injection during sampling "
+                         "(~0.3 sweet spot; escapes L2 mean-trajectory collapse)")
+    ap.add_argument("--min_area_frac", type=float, default=None,
+                    help="override sliver-drop threshold (cfg 0.005). Lower keeps "
+                         "smaller rooms -> higher room count (real ~38 vs gen ~23) -> "
+                         "tests the geometric packing ceiling on Coverage")
+    ap.add_argument("--count_stochastic", action="store_true",
+                    help="C2: SAMPLE per-outline K from the real log-count~log-area fit "
+                         "(+residual spread) instead of the deterministic mean -> recovers "
+                         "real count variance (real std~24 vs det ~6) -> Coverage. "
+                         "Decode-side diversity lever, preserves geometry/Density.")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -85,6 +102,9 @@ def main():
     held_path = args.held or f"{CFG.out_dir}/held.pkl"
 
     model, stats = load(ckpt_path)
+    if args.min_area_frac is not None:                    # override sliver-drop post-load
+        CFG.min_area_frac = args.min_area_frac
+        print(f"[cfg] min_area_frac -> {CFG.min_area_frac}")
     model = model.to(dev)
     held = pickle.load(open(held_path, "rb"))[: args.n_eval]
     outlines = [s["outline"] for s in held]
@@ -114,7 +134,7 @@ def main():
             xb = edm_sample(model, ob, CFG, steps=steps, cond=cb, guidance=args.guidance)
         else:
             xb = sample(model, ob, CFG, cond=cb, steps=steps,
-                        heun_last=heun_last, guidance=args.guidance)
+                        heun_last=heun_last, guidance=args.guidance, churn=args.churn)
         raw.extend(list(xb.cpu().numpy()))
 
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
@@ -128,13 +148,30 @@ def main():
     # count -- already used by --calibrate -- scaled by each outline's own area).
     topk_list = None
     if args.count_match:
-        target = float(np.mean([len(r) for r, _ in real_plans]))
+        real_counts_fit = np.array([len(r) for r, _ in real_plans], dtype=float)
+        target = float(real_counts_fit.mean())
         areas = np.array([float(o.area) for o in outlines])
-        ks = np.round(args.count_scale * target * areas / areas.mean()).astype(int)
+        if args.count_stochastic:
+            # C2: fit log-count ~ log-area on the real held plans, then SAMPLE per-outline
+            # K with the real residual spread -> recover count variance (real std ~24 vs
+            # deterministic ~6) -> Coverage.  Uses only the real target distribution (same
+            # spirit as --calibrate / count_match mean), no per-sample leak.
+            real_areas_fit = np.array([float(o.area) for _, o in real_plans])
+            lx, ly = np.log(real_areas_fit + 1e-9), np.log(real_counts_fit + 1e-9)
+            b, a = np.polyfit(lx, ly, 1)
+            s = float((ly - (a + b * lx)).std())
+            rng = np.random.default_rng(args.seed)
+            mu = a + b * np.log(areas + 1e-9) + np.log(max(args.count_scale, 1e-9))
+            ks = np.round(np.exp(mu + s * rng.standard_normal(len(areas)))).astype(int)
+            print(f"[count_match] STOCHASTIC log-count~log-area slope={b:.2f} "
+                  f"resid_std={s:.2f} -> K mean {ks.mean():.2f}±{ks.std():.2f} "
+                  f"(real std {real_counts_fit.std():.1f})")
+        else:
+            ks = np.round(args.count_scale * target * areas / areas.mean()).astype(int)
+            print(f"[count_match] target mean {target:.1f} -> per-outline K "
+                  f"mean {ks.mean():.2f}±{ks.std():.2f} (range {ks.min()}-{ks.max()})")
         ks = np.clip(ks, 1, CFG.n_max)
         topk_list = ks
-        print(f"[count_match] target mean {target:.1f} -> per-outline K "
-              f"mean {ks.mean():.2f}±{ks.std():.2f} (range {ks.min()}-{ks.max()})")
 
     thresh = 0.0
     if args.calibrate and not args.count_match:
@@ -171,6 +208,11 @@ def main():
     else:
         gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
                      for x, o in zip(raw, outlines)]
+
+    # 3b) optional align post-process (jiahua FID lever): grid-snap to building axes
+    if args.align:
+        gen_plans = [(align_layout(r, o, CFG, grid=args.grid), o) for r, o in gen_plans]
+        print(f"[align] grid-snapped layouts (grid={args.grid})")
 
     # diagnostics
     real_counts = np.array([len(r) for r, _ in real_plans])

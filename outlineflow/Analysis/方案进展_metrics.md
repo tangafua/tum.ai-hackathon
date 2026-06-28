@@ -76,6 +76,42 @@
 - scale 2.0 过填，FID 略好但 Density/Coverage 回落 → 1.5 是甜点。
 - **voronoi 弃用**：几何完美（房间数≈real、gap-free、零重叠、interior cov 1.0），但非矩形 cell 对 FID/Density 特征完全 off-manifold（真实 MSD 房间是矩形）→ 指标崩。证明解码器必须输出矩形。
 
+### 3.2c 与 jiahua 最新方案对比 + align/churn 叠加（plan_id, n_eval=600, seed42）
+
+jiahua 最新（origin/jiahua `result.md`，3-seed 平均）：**FID 135.3 / D 0.088 / C 0.111**（FM + align-g16 + churn0.3）。她的杠杆：**align**（grid-snap 重分区→FID）、**churn**（SDE 采样→Coverage）。两者已 port 进我的 flow.py/postprocess.py/sample_eval.py（`--align --grid --churn`）。
+
+把 align+churn 叠到我的 C1 流程（seed42, n_eval600）：
+
+| config | FID ↓ | Density ↑ | Coverage ↑ |
+|---|---|---|---|
+| 我 pre-align scale1.5 | 166.8 | **0.115** | 0.082 |
+| +align16 | 159.0 | 0.066 | 0.065 |
+| **+align16 +churn0.3** | **156.1** | 0.068 | 0.085 |
+| +align48 +churn0.3 | 178.6 | 0.064 | 0.058 |
+| scale1.0 +align16 +churn0.3 | 184.6 | 0.049 | 0.060 |
+| *jiahua final (3-seed)* | *135.3* | *0.088* | *0.111* |
+
+**核心发现（反直觉）：align 摧毁了我的 Density 主优势**（0.115→0.066）。align 的 grid-snap+重分区把我「多样但抖动」的房间正则化到网格 → 几何多样性塌缩。churn 如期提 Coverage（+0.02）、grid16>>grid48。**naive 叠加未能打过 jiahua**。
+
+更深：同一 align-g16 配方，我的模型 159/0.066 vs 她 131.5/0.091 → **她更简单的模型（无 cross-attn）对 align 响应更好**；我的 cross-attn/cond 高 Density 是「未对齐的抖动多样性」，经不起正则化。
+> 注：两边 held 参照集不同（各自 train/held split），FID 非严格同集可比；趋势可信，绝对值留余地。
+
+**方向修正**：我的模型 = Pareto 上的「高 Density 点」(167/0.115/0.082)，她 = 「高 FID/Coverage 点」(135/0.088/0.111)，互不支配。对我的模型，正确杠杆是**保 Density 的 Coverage 杠杆**，而非她的 align。
+
+### 3.2d 解码侧 Coverage 杠杆全部探尽（plan_id, seed42, n_eval600）
+
+试图在不伤 Density 的前提下提 Coverage：
+
+| 杠杆 | 结果 | 解读 |
+|---|---|---|
+| **stochastic-count**（按 real log-count~log-area 采样 K，resid_std=0.21） | gen 房间数 std 仍 ±6.8（=确定性），C 0.082 不变 | **null**：注入的 K 方差被解码器吸收 → **方差崩塌是几何 packing 上限，不是 count 目标问题** |
+| **min_area_frac↓**（0.005→0.002→0.001） | gen 房间 24→30→33、std ±7→±12→±13（逼近 real ±24），但 C 仅 0.082→0.085、FID/D 反降 | 打破了 packing 上限、count 方差开了，但**多出来的房间是噪声不是真实流形多样性** → Coverage 不涨、FID/D 退化 |
+| churn0.3 | C +0.02（0.082→~0.085） | 采样侧小幅有效，但不改变量级 |
+
+**结论：解码/采样侧前沿已探尽。** Coverage 天花板(~0.08)不是房间数问题，而是**生成的布局本身缺真实多样性**（L2 均值回归根因）。我的 plan_id 最优仍为 **C1 scale1.5 = 166.8 / 0.115 / 0.082**（高 Density Pareto 点）。要在三项上同时超过 jiahua，只能动**模型/训练层（Tier C）**。
+
+**Tier C 方向（重训）**：Tier A 显示我的 cross-attn/cond 模型 align 后反不如 jiahua 更简单的模型（159/0.066 vs 131.5/0.091）。→ 首个 Tier C 实验应为**架构消融重训**：去掉 cross-attn + cond（jiahua 式简化模型）+ 我的 C1 解码 + align，验证「她的强 FID 模型 + 我的 Density 解码」能否取两者之长。
+
 ### 3.3 Tier 1/2 消融 + 调参结果（unit_id, 15k steps, eval g=1.5 除非注明）
 
 | 变体 | FID ↓ | Density ↑ | Coverage ↑ | gen 房间数 | 解读 |
