@@ -57,6 +57,25 @@
 
 **结论**：outline 编码改进（P0-A 的 cross-attn）让房间贴合边界（interior coverage 0.5→0.85）；数量条件让房间数基本对齐；CFG 再补 Coverage。三项目标（改进编码、提升 Density）均达成。
 
+### 3.2b plan_id 官方口径（全量数据, 20k steps, RF full + C1, g=1.5）
+
+**plan_id 特有瓶颈 = 高房间密度下矩形 overlap-resolve 大量丢房间**（请求 K≈38、实际只解出 ~20，丢一半；interior cov 0.59）。对策 = `count_scale>1` 补偿丢房率。count_scale 扫描（n_eval=600, inception 官方口径）：
+
+| config | FID ↓ | Density ↑ | Coverage ↑ | gen 房间 | interior cov |
+|---|---|---|---|---|---|
+| jiahua 基线 | 190.5 | 0.052 | 0.060 | — | — |
+| C1 scale 1.0 | 186.2 | 0.100 | 0.062 | 19.5 | 0.59 |
+| **C1 scale 1.5** ⭐ | **166.8** | **0.115** | **0.082** | 23.9 | 0.75 |
+| C1 scale 2.0 | 164.8 | 0.109 | 0.075 | 24.6 | 0.78 |
+| voronoi（弃） | 302 | 0.003 | 0.013 | 36.5 | 1.00 |
+
+**plan_id 最优 = C1 scale 1.5：FID 166.8 / D 0.115 / C 0.082 → 对标基线 FID −12%, Density +121%, Coverage +37%。**
+
+要点：
+- **count_scale 最优值由解码器丢房率决定**：unit_id 丢 ~2/9（22%）→ scale 1.0 最优；plan_id 丢 ~18/38（50%）→ 需 scale 1.5 补偿。两者相反但同源。
+- scale 2.0 过填，FID 略好但 Density/Coverage 回落 → 1.5 是甜点。
+- **voronoi 弃用**：几何完美（房间数≈real、gap-free、零重叠、interior cov 1.0），但非矩形 cell 对 FID/Density 特征完全 off-manifold（真实 MSD 房间是矩形）→ 指标崩。证明解码器必须输出矩形。
+
 ### 3.3 Tier 1/2 消融 + 调参结果（unit_id, 15k steps, eval g=1.5 除非注明）
 
 | 变体 | FID ↓ | Density ↑ | Coverage ↑ | gen 房间数 | 解读 |
