@@ -30,7 +30,7 @@ class GaussianFourierProjection(nn.Module):
 
 
 class OutlineEncoder(nn.Module):
-    """PointNet-lite over boundary points -> a single conditioning vector."""
+    """PointNet-lite over boundary points -> pooled vector + per-point tokens."""
 
     def __init__(self, d_model: int):
         super().__init__()
@@ -41,10 +41,10 @@ class OutlineEncoder(nn.Module):
         )
         self.proj = nn.Linear(2 * d_model, d_model)
 
-    def forward(self, outline: torch.Tensor) -> torch.Tensor:  # [B,P,4]
-        h = self.pt(outline)                                   # [B,P,d_model]
+    def forward(self, outline: torch.Tensor):                  # [B,P,4]
+        h = self.pt(outline)                                   # [B,P,d_model] per-point tokens
         pooled = torch.cat([h.max(dim=1).values, h.mean(dim=1)], dim=-1)
-        return self.proj(pooled)                               # [B,d_model]
+        return self.proj(pooled), h                            # ([B,d_model], [B,P,d_model])
 
 
 def modulate(x, shift, scale):
@@ -52,7 +52,7 @@ def modulate(x, shift, scale):
 
 
 class AdaLNZeroBlock(nn.Module):
-    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int):
+    def __init__(self, d_model: int, n_heads: int, mlp_ratio: int, cross: bool = False):
         super().__init__()
         self.ln1 = nn.LayerNorm(d_model, elementwise_affine=False)
         self.attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
@@ -64,12 +64,24 @@ class AdaLNZeroBlock(nn.Module):
         self.ada = nn.Sequential(nn.SiLU(), nn.Linear(d_model, 6 * d_model))
         nn.init.zeros_(self.ada[-1].weight)
         nn.init.zeros_(self.ada[-1].bias)
+        self.cross = cross
+        if cross:                                    # room tokens attend to outline tokens
+            self.ln_x = nn.LayerNorm(d_model, elementwise_affine=False)
+            self.cross_attn = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+            self.ada_x = nn.Sequential(nn.SiLU(), nn.Linear(d_model, 3 * d_model))
+            nn.init.zeros_(self.ada_x[-1].weight)
+            nn.init.zeros_(self.ada_x[-1].bias)
 
-    def forward(self, h, c):
+    def forward(self, h, c, ctx=None):
         s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp = self.ada(c).chunk(6, dim=-1)
         x = modulate(self.ln1(h), s_msa, sc_msa)
         a, _ = self.attn(x, x, x, need_weights=False)
         h = h + g_msa.unsqueeze(1) * a
+        if self.cross and ctx is not None:           # cross-attend to per-point outline
+            s_x, sc_x, g_x = self.ada_x(c).chunk(3, dim=-1)
+            x = modulate(self.ln_x(h), s_x, sc_x)
+            a, _ = self.cross_attn(x, ctx, ctx, need_weights=False)
+            h = h + g_x.unsqueeze(1) * a
         x = modulate(self.ln2(h), s_mlp, sc_mlp)
         h = h + g_mlp.unsqueeze(1) * self.mlp(x)
         return h
@@ -89,8 +101,10 @@ class OutlineFlow(nn.Module):
         self.use_scale = getattr(cfg, "use_scale", False)
         if self.use_scale:
             self.scale_embed = nn.Sequential(nn.Linear(3, d), nn.SiLU(), nn.Linear(d, d))
+        self.cross_attn = getattr(cfg, "cross_attn", False)
         self.blocks = nn.ModuleList(
-            [AdaLNZeroBlock(d, cfg.n_heads, cfg.mlp_ratio) for _ in range(cfg.n_layers)]
+            [AdaLNZeroBlock(d, cfg.n_heads, cfg.mlp_ratio, cross=self.cross_attn)
+             for _ in range(cfg.n_layers)]
         )
         self.norm_out = nn.LayerNorm(d, elementwise_affine=False)
         self.ada_out = nn.Sequential(nn.SiLU(), nn.Linear(d, 2 * d))
@@ -101,12 +115,14 @@ class OutlineFlow(nn.Module):
 
     def forward(self, xt, t, outline, scale=None):
         h = self.embed_tok(xt)                       # [B,N,d]
-        c = self.t_embed(self.gfp(t)) + self.outline_enc(outline)         # [B,d]
+        pooled, otok = self.outline_enc(outline)     # [B,d], [B,P,d]
+        c = self.t_embed(self.gfp(t)) + pooled       # [B,d]
         if self.use_scale and scale is not None:
             c = c + self.scale_embed(scale)
         c = F.silu(c)
+        ctx = otok if self.cross_attn else None
         for blk in self.blocks:
-            h = blk(h, c)
+            h = blk(h, c, ctx)
         shift, scale = self.ada_out(c).chunk(2, dim=-1)
         h = modulate(self.norm_out(h), shift, scale)
         return self.head(h)                          # [B,N,D]

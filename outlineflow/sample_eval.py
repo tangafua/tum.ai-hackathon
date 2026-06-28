@@ -25,7 +25,7 @@ def load(ckpt_path):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     for k in ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
               "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
-              "use_scale", "diffusion"):
+              "use_scale", "cross_attn", "diffusion"):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
@@ -74,6 +74,12 @@ def main():
                     help="best-of-N: sample N per outline, keep the one the critic scores most real")
     ap.add_argument("--eta", type=float, default=1.0,
                     help="diffusion sampler stochasticity (1=DDPM ancestral, 0=DDIM)")
+    ap.add_argument("--temp", type=float, default=1.0,
+                    help="(3) initial-noise temperature (>1 = more spread)")
+    ap.add_argument("--repel", type=float, default=0.0,
+                    help="(2) particle-repulsion strength (push batch samples apart)")
+    ap.add_argument("--count_cond", action="store_true",
+                    help="(1) per-outline target room-count drawn from p(count|area)")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -125,7 +131,8 @@ def main():
         if is_diff:
             return ddim_sample(model, ob, CFG, steps=steps or 100, eta=args.eta, scale=sb)
         return sample(model, ob, CFG, scale=sb, steps=steps, energy=energy,
-                      guidance=args.guidance, guide_from=args.guide_from, churn=args.churn)
+                      guidance=args.guidance, guide_from=args.guide_from, churn=args.churn,
+                      temp=args.temp, repel=args.repel)
 
     raw = []
     for i in range(0, len(outlines), args.batch):
@@ -174,8 +181,32 @@ def main():
               f"(decoded ~{mean_count(thresh):.1f} on subsample)")
 
     # 3) decode + postprocess to valid layouts
-    gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
-                 for x, o in zip(raw, outlines)]
+    if args.count_cond:
+        # (1) per-outline target count drawn from p(count | area), fit on the real set:
+        # count ~ a*log(area)+b + N(0, sigma).  Restores the real count VARIANCE that the
+        # L2 model collapses (area is a pure function of the outline -> spec-compliant).
+        rc = np.array([len(r) for r, _ in real_plans], dtype=float)
+        la = np.array([np.log(max(o.area, 1e-6)) for _, o in real_plans])
+        a, b = np.polyfit(la, rc, 1)
+        sigma = float(np.std(rc - (a * la + b)))
+        rng2 = np.random.default_rng(args.seed)
+        lo_t, hi_t = float(rc.min()), float(rc.max())
+        gen_plans = []
+        for x, o in zip(raw, outlines):
+            tgt = int(np.clip(round(a * np.log(max(o.area, 1e-6)) + b
+                                    + sigma * rng2.standard_normal()), lo_t, hi_t))
+            lo = float(x[:, 0].min()); hi = float(x[:, 0].max())
+            for _ in range(12):                    # per-outline threshold search
+                mid = 0.5 * (lo + hi)
+                if len(decode(x, o, stats, CFG, presence_thresh=mid)) > tgt:
+                    lo = mid
+                else:
+                    hi = mid
+            gen_plans.append((decode(x, o, stats, CFG, presence_thresh=0.5 * (lo + hi)), o))
+        print(f"[count_cond] per-outline count ~ {a:.1f}*log(area)+{b:.1f} ± {sigma:.1f}")
+    else:
+        gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
+                     for x, o in zip(raw, outlines)]
 
     # 3b) optional alignment post-process (C): grid-snap rooms to the building axes
     if args.align:

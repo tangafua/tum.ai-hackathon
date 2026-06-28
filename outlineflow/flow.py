@@ -51,7 +51,7 @@ def _energy_grad(energy, x, t, outline):
 
 @torch.no_grad()
 def sample(model, outline, cfg, steps=None, heun_last=5, generator=None, scale=None,
-           energy=None, guidance=0.0, guide_from=0.3, churn=0.0):
+           energy=None, guidance=0.0, guide_from=0.3, churn=0.0, temp=1.0, repel=0.0):
     """Integrate the velocity field from noise (t=0) to data (t=1).
 
     Pass ``generator`` (a torch.Generator) to make the initial noise -- and hence
@@ -72,6 +72,7 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None, scale=N
                         device=generator.device).to(dev)
     else:
         x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
+    x = temp * x                                          # (3) noise-temperature prior
     dt = 1.0 / steps
     use_guide = energy is not None and guidance != 0.0
     for i in range(steps):
@@ -89,6 +90,9 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None, scale=N
         if churn > 0.0 and i < steps - heun_last:            # SDE-style noise injection
             # add noise scaled by remaining time -> more diversity early, settle near t=1
             x = x + churn * (1.0 - tval) * (dt ** 0.5) * torch.randn_like(x)
+        if repel > 0.0 and B > 1 and tval >= guide_from:     # (2) particle repulsion
+            # push each sample away from the batch mean -> a more diverse generated set
+            x = x + repel * (1.0 - tval) * dt * (x - x.mean(dim=0, keepdim=True))
     return x
 
 

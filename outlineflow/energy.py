@@ -33,7 +33,7 @@ class EnergyCritic(nn.Module):
     def forward(self, x, t, outline):
         """x:[B,N,D] t:[B] outline:[B,P,4] -> logit[B] (high = looks REAL)."""
         h = self.embed_tok(x)
-        c = F.silu(self.t_embed(self.gfp(t)) + self.outline_enc(outline))
+        c = F.silu(self.t_embed(self.gfp(t)) + self.outline_enc(outline)[0])
         for blk in self.blocks:
             h = blk(h, c)
         h = self.norm(h)

@@ -28,7 +28,7 @@ from postprocess import voronoi_layout, layout_from_tokens, coverage_overlap, al
 DEFAULT_CKPT = "outputs_full_plan_id/ckpt.pt"   # full-data plan_id model (n_max=156)
 _RESTORE_KEYS = ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
                  "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
-                 "msd_group", "use_scale")
+                 "msd_group", "use_scale", "cross_attn")
 _CACHE: dict = {}
 
 

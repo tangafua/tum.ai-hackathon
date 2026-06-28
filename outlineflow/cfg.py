@@ -127,6 +127,8 @@ class Config:
     # --- outline scale conditioning (derived from the outline ONLY; spec-compliant) ---
     use_scale: bool = False       # inject absolute outline size [log area, log w, log h] so
                                   # the model can vary room-COUNT with outline size (Coverage)
+    cross_attn: bool = False      # room tokens CROSS-ATTEND to per-point outline tokens
+                                  # (instead of a single pooled vector) -> richer conditioning
 
     # --- real MSD ---
     msd_group: str = "plan_id"    # brief appendix groups by plan_id; "unit_id" = per-apartment

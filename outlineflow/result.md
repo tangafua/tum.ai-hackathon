@@ -43,6 +43,11 @@ fine-tune, best-of-N) look promising on a single seed but **wash out or interfer
 multi-seed evaluation** — which itself is a key lesson: with a stochastic pipeline,
 single-run numbers are unreliable and every claim must be multi-seed averaged.
 
+The sharpest proof: we fully **un-compressed the conditioning** (cross-attention over all
+boundary points + scale), raising the model's outline-reading from r 0.06 → **0.67** — and
+metrics still did **not** improve (got slightly worse). Opening the conditioning bottleneck
+changed nothing, because the limit was never the conditioning — it is the averaging loss.
+
 Practical ranking that held up: **align (FID) + churn (Coverage)** on a pure flow-matching
 model beats diffusion and every EBM variant tried.
 
@@ -130,6 +135,16 @@ Rigorously tested; none beats the simple recipe (most washed out under multi-see
   class is a decoder/sliver-drop artifact, and renders black anyway → irrelevant to FID).
 - **Scale injection** (feed outline size): fixed the count↔area *direction* (r 0.06 → 0.63)
   but **not the variance** — metrics flat. L2 still regresses each prediction to its mean.
+- **Richer outline conditioning** (the "the input vector compresses too much" hypothesis):
+  the encoder pools 128 boundary points into a *single* vector. We replaced that with
+  **cross-attention** to all per-point tokens, and combined it with scale. This **demonstrably
+  un-compressed the condition** — the model's count↔area correlation jumped from **0.06 → 0.67**
+  (real 0.94), the best outline-reading of any variant. **Yet the metrics got *worse***
+  (cross+scale, single-seed: FID 142.6 / Den 0.078 / Cov 0.098 vs baseline 135.3/0.088/0.111).
+  Sharper conditioning makes the model lock onto the conditional mean *harder* (lowest train
+  loss 0.1405) → less diverse → worse Coverage. **This is the decisive test:** we opened the
+  conditioning bottleneck completely and the scores did not move — proving the limit is the
+  L2 objective, not how well the model can read the outline.
 - **Energy-weighted FM (EWFM)**: re-weighting rare tails can't beat mean-regression. No gain.
 - **Forcing fewer rooms**: monotonically worse (FID 161→290 as target count drops).
 - **Energy guidance**: 3-seed mean Cov 0.103 vs 0.098 — within noise; dominated by churn.
@@ -137,8 +152,32 @@ Rigorously tested; none beats the simple recipe (most washed out under multi-see
   (guid 0.15) / 0.094 (guid 0.25), both < churn-alone 0.111; more guidance = worse.
 - **Best-of-N critic re-rank**: no gain (and OOM at high N).
 
+**More-aggressive sampling-side diversity hacks — all fail (vs churn0.3 135/0.088/0.111):**
+
+| Idea | Config | FID | Density | Coverage |
+|------|--------|-----|---------|----------|
+| (1) per-outline count ~ p(count\|area) | count_cond + churn | 153.9 | 0.082 | 0.103 |
+| (1) " (no churn) | count_cond | 151.2 | 0.073 | 0.080 |
+| (2) particle repulsion (push batch apart) | repel 1 + churn | 158.1 | 0.063 | 0.075 |
+| (2) " (stronger) | repel 3 + churn | 189.1 | 0.025 | 0.030 |
+| (3) noise temperature | temp 1.15 + churn | 144.1 | 0.075 | 0.107 |
+| (3) " (stronger) | temp 1.3 + churn | 155.8 | 0.055 | 0.080 |
+
+All three are **worse on every metric**. Unifying reason: they push samples **off the model's
+learned manifold**. The velocity field only knows how to denoise toward *valid* layouts near
+its training distribution; `churn` works because it is gentle, schedule-matched noise that
+stays near the manifold, whereas a bigger initial-noise temperature, an inter-sample
+repulsion, or a forced per-outline count threshold all leave the manifold → the decoder gets
+garbage tokens → degenerate plans. **Sampling-time diversity is already saturated by churn.**
+
 **Takeaway:** the bottleneck is the L2 training objective, not model class or capacity.
-The only thing that robustly buys diversity is **sampling-time stochasticity (churn)**.
+The only thing that robustly buys diversity is **gentle sampling-time stochasticity (churn)**,
+and that lever is now exhausted too. Both the **model side** (capacity, depth, conditioning,
+paradigm, EBM) and the **sampling side** (churn, temperature, repulsion, count-forcing,
+guidance, re-rank) have been swept; `align + churn0.3` is the practical ceiling of this
+flow-matching + rectangle-decode approach. Beating it would require a fundamentally different,
+non-averaging objective (e.g. autoregressive/discrete layout modeling) — which is out of
+scope under the brief's "diffusion- or flow-matching-based" rule.
 
 ---
 

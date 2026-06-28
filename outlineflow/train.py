@@ -59,6 +59,8 @@ def main():
                     help="loss weight on the presence channel (default 2.0)")
     ap.add_argument("--use_scale", action="store_true",
                     help="inject absolute outline size so room-count tracks outline area")
+    ap.add_argument("--cross_attn", action="store_true",
+                    help="room tokens cross-attend to per-point outline tokens (richer cond.)")
     ap.add_argument("--ewfm", action="store_true",
                     help="energy-weighted FM: importance-sample rare (tail) room-counts")
     ap.add_argument("--ewfm_beta", type=float, default=0.5,
@@ -75,6 +77,7 @@ def main():
     CFG.w_geometry = args.w_geometry
     CFG.w_presence = args.w_presence
     CFG.use_scale = args.use_scale
+    CFG.cross_attn = args.cross_attn
     CFG.device = args.device
     CFG.seed = args.seed
     CFG.out_dir = args.out_dir
