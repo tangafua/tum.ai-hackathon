@@ -6,7 +6,7 @@ with a from-scratch **rectified flow-matching** model. Dataset: Modified Swiss D
 
 > 🤗 **Model weights & artifacts:** https://huggingface.co/gafua926/outlineflow
 > 🎞️ Presentation deck: https://docs.google.com/presentation/d/1xrL_qE7JLWYe1KVjuY8o08DVCZmzhQG7dOgfai8SUWY/edit?usp=sharing
-> 📄 Full results: [`outlineflow/result.md`](outlineflow/result.md) · Method: [`outlineflow/SUBMISSION_METHODOLOGY.md`](outlineflow/SUBMISSION_METHODOLOGY.md)
+> 📄 Full results: [`outlineflow/result.md`](outlineflow/result.md) · Method: [`outlineflow/SUBMISSION_METHODOLOGY.md`](outlineflow/SUBMISSION_METHODOLOGY.md)  
 
 ---
 
