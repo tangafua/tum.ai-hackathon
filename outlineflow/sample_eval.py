@@ -69,6 +69,9 @@ def main():
                          "mean count by each outline's area (K_i=round(mean*area_i/mean_area)), "
                          "replacing the single global presence threshold -> fixes the "
                          "under-separation clamp + recovers per-plan count variance")
+    ap.add_argument("--count_scale", type=float, default=1.0,
+                    help="C1: multiply per-outline K (the rect decoder drops ~2 rooms/"
+                         "plan in overlap-resolve, so >1 compensates)")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -127,7 +130,7 @@ def main():
     if args.count_match:
         target = float(np.mean([len(r) for r, _ in real_plans]))
         areas = np.array([float(o.area) for o in outlines])
-        ks = np.round(target * areas / areas.mean()).astype(int)
+        ks = np.round(args.count_scale * target * areas / areas.mean()).astype(int)
         ks = np.clip(ks, 1, CFG.n_max)
         topk_list = ks
         print(f"[count_match] target mean {target:.1f} -> per-outline K "
@@ -162,8 +165,12 @@ def main():
               f"(decoded ~{mean_count(thresh):.1f} on subsample)")
 
     # 3) decode + postprocess to valid layouts
-    gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
-                 for x, o in zip(raw, outlines)]
+    if topk_list is not None:
+        gen_plans = [(decode(x, o, stats, CFG, top_k=int(k)), o)
+                     for x, o, k in zip(raw, outlines, topk_list)]
+    else:
+        gen_plans = [(decode(x, o, stats, CFG, presence_thresh=thresh), o)
+                     for x, o in zip(raw, outlines)]
 
     # diagnostics
     real_counts = np.array([len(r) for r, _ in real_plans])

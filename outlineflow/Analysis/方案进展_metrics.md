@@ -95,6 +95,9 @@
 | 2026-06-27 | 全量改进模型 | unit_id | 15k | g1.0 FID112.7/D0.078/C0.098；g1.5 FID112.2/D0.084/C0.124 |
 | 2026-06-28 | guidance 扫描 | unit_id | — | knee@1.5–2.0；g2.0 D 峰值 0.089 |
 | 2026-06-28 | Tier1/2 消融+调参 E1-E6 | unit_id | 15k | full 仍最优；3 块改动皆净正；w_pres4/放大/freqs32 均未超越；presence 欠分离需结构改动（见 §3.3） |
+| 2026-06-28 | M-series 生成范式 M1/M2/M4 | unit_id | 15k | 全部负/平 FID → 瓶颈非生成范式（见 §7.x/7.y） |
+| 2026-06-28 | **C1 per-outline top-K 解码** | unit_id | — | **破 floor：FID 109.8/D 0.118/C 0.132**（RF, g1.5, scale1.0） |
+| 2026-06-28 | C1 count_scale×guidance 扫描 | unit_id | — | **scale1.0 最优**；放大 K 反伤（少而精＞多而杂）。**当前最优配方 = RF full + C1(g1.5,scale1.0)** |
 
 ---
 
@@ -178,6 +181,8 @@
 | **M2** 200/full-Heun | 112.9 | 0.087 | 0.114 | 同上 |
 | M1 logit-normal t | 119.7 | 0.080 | 0.098 | **更差**（见下） |
 | M4 EDM | 113.9 | **0.089** | 0.106 | D/房间数↑、interior cov 0.87 最佳，但 FID 没破 floor、C↓ |
+| **C1 count-match (RF)** | **109.8** | **0.118** | **0.132** | **破 floor！全面最佳**（见 §7.z） |
+| C1 count-match (EDM) | 113.2 | 0.110 | 0.110 | RF+C1 优于 EDM+C1 |
 
 **M2 结论（重要负结果）**：采样器升级（full-Heun / 增步）对 FID 无实质改善、Coverage 反降 → **ODE 离散化不是瓶颈**，默认采样器已近收敛。~112 的 FID floor 是**模型/分布**层面的限制，提升必须来自**训练目标（M1/M4）**或**结构（§7-C）**，而非采样。
 
@@ -188,4 +193,13 @@
 ### 7.y 决定性结论 & 转向 §7-C
 
 三类杠杆已测：① 架构超参（Tier1/2，full 最优、放大退化）；② 采样器（M2 无效）；③ 生成目标（M1 负、M4 EDM 平 FID）。**全部卡在 ~112 FID + presence 欠分离**。→ 唯一未碰、且被反复指向的是 **presence/count 的建模结构**。下一步实现 **C1（per-outline 计数匹配解码，免重训，先在现有 ckpt 验证）**：用 outline 面积预测每个户型的房间数 K，解码改为**按 presence 排名取 top-K**（而非单一全局阈值），直接修复「房间数 8.5<9.4 + 阈值 clamp + 方差」。若 C1 有效再上 presence 独立头/集合匹配重训。
+
+### 7.z C1 突破：per-outline top-K 解码（RF ckpt, g=1.5）
+
+| 解码 | FID ↓ | Density ↑ | Coverage ↑ | interior cov | K/decoded |
+|---|---|---|---|---|---|
+| 旧（全局阈值+重 gap-fill） | 112.2 | 0.084 | 0.124 | 0.85 | —/8.5 |
+| **C1 top-K** | **109.8** | **0.118** | **0.132** | 0.71 | 9.34±3.47 / 7.16 |
+
+**关键洞察**：瓶颈不在速度场也不在生成范式，而在**解码**。旧 pipeline 用单一全局 presence 阈值 + 强制 gap-fill，把 under-separation 掩盖成「过度填满」(interior cov 0.85)，反而 off-manifold。C1 改为**按面积给每个 outline 算 K_i（仅用已许可的真实均值 × outline 自身面积，无泄漏，方差 3.47>真实 2.87）+ 按 presence 排名取 top-K**，渲染分布更贴近真实 MSD（房间间有黑色 wall/structure，interior cov 0.71 反而更真）→ FID 破 floor、Density +40%。RF+C1 优于 EDM+C1。**C1 设为默认解码**；细化扫描 count_scale × guidance 见 §5。
 
