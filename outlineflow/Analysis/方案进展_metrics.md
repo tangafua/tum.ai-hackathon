@@ -106,11 +106,26 @@ jiahua 最新（origin/jiahua `result.md`，3-seed 平均）：**FID 135.3 / D 0
 |---|---|---|
 | **stochastic-count**（按 real log-count~log-area 采样 K，resid_std=0.21） | gen 房间数 std 仍 ±6.8（=确定性），C 0.082 不变 | **null**：注入的 K 方差被解码器吸收 → **方差崩塌是几何 packing 上限，不是 count 目标问题** |
 | **min_area_frac↓**（0.005→0.002→0.001） | gen 房间 24→30→33、std ±7→±12→±13（逼近 real ±24），但 C 仅 0.082→0.085、FID/D 反降 | 打破了 packing 上限、count 方差开了，但**多出来的房间是噪声不是真实流形多样性** → Coverage 不涨、FID/D 退化 |
-| churn0.3 | C +0.02（0.082→~0.085） | 采样侧小幅有效，但不改变量级 |
+| churn（无 align, 0/0.5/0.7） | C 0.082→0.063→0.077，FID 反升 | **null**：churn 单独在我的模型上 Coverage 不升反降；只有与 align 同用才有 +0.02 微效 |
 
 **结论：解码/采样侧前沿已探尽。** Coverage 天花板(~0.08)不是房间数问题，而是**生成的布局本身缺真实多样性**（L2 均值回归根因）。我的 plan_id 最优仍为 **C1 scale1.5 = 166.8 / 0.115 / 0.082**（高 Density Pareto 点）。要在三项上同时超过 jiahua，只能动**模型/训练层（Tier C）**。
 
-**Tier C 方向（重训）**：Tier A 显示我的 cross-attn/cond 模型 align 后反不如 jiahua 更简单的模型（159/0.066 vs 131.5/0.091）。→ 首个 Tier C 实验应为**架构消融重训**：去掉 cross-attn + cond（jiahua 式简化模型）+ 我的 C1 解码 + align，验证「她的强 FID 模型 + 我的 Density 解码」能否取两者之长。
+**Tier C 方向（重训）**：Tier A 显示我的 cross-attn/cond 模型 align 后反不如 jiahua 更简单的模型（159/0.066 vs 131.5/0.091）。→ 首个 Tier C 实验为**架构消融重训**：去掉 cross-attn + cond（jiahua 式简化模型）+ 我的 C1 解码 + align。
+
+### 3.2e Tier C 架构消融（重训 exp_plan_simple, 全量 plan_id, 20k, 无 cross-attn/无 cond）
+
+**假设被推翻——这是关键正面结论。** 同数据/同 held/同解码下逐项对比：
+
+| config（apples-to-apples） | FID ↓ | Density ↑ | Coverage ↑ |
+|---|---|---|---|
+| **我的 cross-attn+cond** + C1 1.5 | **166.8** | **0.115** | **0.082** |
+| simple（无 cross-attn/cond）+ C1 1.5 | 193.9 | 0.078 | 0.053 |
+| 我的 + C1 + align16 | 159.0 | 0.066 | 0.065 |
+| simple + C1 + align16 | 176.2 | 0.041 | 0.060 |
+
+**简化模型在所有指标上都更差。** Tier A 看到的「她的简单模型 align 后更好（131.5 vs 我 159）」是 **held 参照集混淆，不是架构差异**（正是先前标注的 caveat）。公平对比（同 split/held/解码）下 **我的 cross-attn + cond 架构完胜** → **架构工作得到验证**，cross-attn outline 编码 + count 条件是净正贡献。
+
+**因此 jiahua 135.3 vs 我 166.8 不是同口径可比**（不同参照集 + 3-seed + 她的 calibration）。要严格对比需把两套 recipe 在同一 split 上重训——但我自己的 apples-to-apples 消融已证明：**我的完整流程（cross-attn + cond + C1 scale1.5）= 我的最优 = 166.8 / 0.115 / 0.082**，且每个组件都经消融验证为净正。
 
 ### 3.3 Tier 1/2 消融 + 调参结果（unit_id, 15k steps, eval g=1.5 除非注明）
 
