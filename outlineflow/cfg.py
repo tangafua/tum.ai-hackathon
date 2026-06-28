@@ -83,6 +83,10 @@ class Config:
     # not 'area' rooms. Set from data in msd_data; persisted in the checkpoint.
     n_gen_classes: int = 9
     p_outline: int = 128     # boundary points sampled for the outline encoder
+    outline_fourier_freqs: int = 16   # random Fourier bands for boundary-point coords
+                                       # (lets the encoder represent fine boundary geometry)
+    n_cond: int = 2          # global outline scale features (log-area, log-perimeter)
+                             # injected into the conditioning vector to control room count
 
     # channel layout (DO NOT reorder without updating params.py):
     #   [0]   presence  (+1 real / -1 padding)
@@ -98,6 +102,8 @@ class Config:
     n_layers: int = 4
     n_heads: int = 4
     mlp_ratio: int = 4
+    use_cross_attn: bool = True   # tokens cross-attend to boundary points (P0-A);
+                                  # set False for the ablation (global-vector cond only)
 
     # --- training ---
     batch_size: int = 128
@@ -113,6 +119,20 @@ class Config:
     w_geometry: float = 1.0
     w_type: float = 0.5
     w_pad_slot: float = 0.3   # down-weight padding (absent) slots
+
+    # --- training: probability-path timestep sampling ---
+    t_dist: str = "uniform"        # "uniform" U(0,1) or "logitnormal" t=sigmoid(m+s*z)
+    t_logit_mean: float = 0.0      # logit-normal mean (0 -> centered on t=0.5)
+    t_logit_std: float = 1.0       # logit-normal std (SD3 default ~1.0)
+
+    # --- generative objective (M4) ---
+    objective: str = "rectflow"    # "rectflow" (default) | "edm" (Karras 2022 denoiser)
+    sigma_data: float = 1.0        # std of the (standardized) token data
+    edm_p_mean: float = -1.2       # ln-sigma sampling: mean
+    edm_p_std: float = 1.2         # ln-sigma sampling: std
+    edm_sigma_min: float = 0.002   # EDM sampler schedule min sigma
+    edm_sigma_max: float = 80.0    # EDM sampler schedule max sigma
+    edm_rho: float = 7.0           # EDM sampler schedule curvature
 
     # --- sampling ---
     sample_steps: int = 100
@@ -135,6 +155,13 @@ class Config:
     canvas: int = 256
     nearest_k: int = 5
     min_area_frac: float = 0.005   # drop slivers below this fraction of outline area
+    # gap-fill cap: a leftover patch larger than this fraction of the outline area is
+    # NOT merged into a neighbour (it would create an off-manifold giant room that
+    # tanks Density/FID); it is left as uncovered interior (reads as wall/black).
+    gap_fill_max_frac: float = 0.15
+    # hard lower bound for the calibrated presence threshold, so noise/padding slots
+    # (presence ~ -1) are never admitted as rooms even if calibration over-lowers it.
+    presence_thresh_floor: float = -0.5
 
     device: str = field(default_factory=pick_device)
     out_dir: str = "outputs"

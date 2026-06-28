@@ -19,7 +19,7 @@ import params
 import synth_data
 from cfg import CFG, seed_everything
 from model import OutlineFlow, count_params
-from flow import fm_loss, EMA
+from flow import fm_loss, edm_loss, EMA
 
 
 def lr_at(step, cfg):
@@ -43,8 +43,28 @@ def main():
                     help="real-MSD grouping: plan_id (brief, per floor) or unit_id (per apartment)")
     ap.add_argument("--residential_only", action="store_true",
                     help="keep only RESIDENTIAL units (brief keeps all 'area' rooms)")
-    ap.add_argument("--msd_limit", type=int, default=2000,
-                    help="max real plans to read (CSV is large; reads only this many)")
+    ap.add_argument("--msd_limit", type=int, default=0,
+                    help="max real plans to read; 0 = no cap (use the full CSV)")
+    ap.add_argument("--cfg_drop", type=float, default=0.0,
+                    help="classifier-free guidance: prob of dropping the outline "
+                         "condition during training (e.g. 0.1); 0 = off")
+    # --- ablation / variant overrides (default None = use cfg.py value) ---
+    ap.add_argument("--w_presence", type=float, default=None,
+                    help="presence-loss weight (default cfg 2.0); raise to sharpen "
+                         "present/absent separation -> better room count")
+    ap.add_argument("--d_model", type=int, default=None, help="model width override")
+    ap.add_argument("--n_layers", type=int, default=None, help="depth override")
+    ap.add_argument("--n_cond", type=int, default=None,
+                    help="0 disables the outline-scale count condition (P0-B ablation)")
+    ap.add_argument("--fourier_freqs", type=int, default=None,
+                    help="boundary-point Fourier bands (default cfg 16)")
+    ap.add_argument("--no_cross_attn", action="store_true",
+                    help="disable token->boundary cross-attention (P0-A ablation)")
+    ap.add_argument("--t_dist", choices=["uniform", "logitnormal"], default=None,
+                    help="timestep sampling for FM loss (M1: logitnormal emphasizes "
+                         "mid-t, SD3-style)")
+    ap.add_argument("--objective", choices=["rectflow", "edm"], default=None,
+                    help="generative objective (M4: edm = Karras preconditioned denoiser)")
     ap.add_argument("--device", type=str, default=CFG.device)
     ap.add_argument("--seed", type=int, default=CFG.seed)
     ap.add_argument("--out_dir", default=CFG.out_dir,
@@ -58,6 +78,15 @@ def main():
     CFG.out_dir = args.out_dir
     CFG.msd_group = args.group
     CFG.msd_residential_only = args.residential_only
+    # variant overrides (only when explicitly passed, so default = cfg.py)
+    if args.w_presence is not None:    CFG.w_presence = args.w_presence
+    if args.d_model is not None:       CFG.d_model = args.d_model
+    if args.n_layers is not None:      CFG.n_layers = args.n_layers
+    if args.n_cond is not None:        CFG.n_cond = args.n_cond
+    if args.fourier_freqs is not None: CFG.outline_fourier_freqs = args.fourier_freqs
+    if args.no_cross_attn:             CFG.use_cross_attn = False
+    if args.t_dist is not None:        CFG.t_dist = args.t_dist
+    if args.objective is not None:     CFG.objective = args.objective
     if args.overfit:
         args.n_train = args.overfit
         CFG.batch_size = min(CFG.batch_size, args.overfit)
@@ -75,20 +104,28 @@ def main():
             args.data_csv, CFG, limit=args.msd_limit, group=args.group,
             residential_only=args.residential_only)
         rng.shuffle(all_s)
-        n_held = min(args.n_held, len(all_s) // 5)
-        held_samples, train_samples = all_s[:n_held], all_s[n_held:]
+        if args.overfit:
+            # gate test: memorize a SMALL fixed subset; eval on the SAME plans, so
+            # Density should spike if the (cross-attn + cond) wiring can fit data.
+            train_samples = all_s[:args.overfit]
+            held_samples = train_samples
+            print(f"[data] OVERFIT gate: {len(train_samples)} plans (train == held)")
+        else:
+            n_held = min(args.n_held, len(all_s) // 5)
+            held_samples, train_samples = all_s[:n_held], all_s[n_held:]
     else:
         print(f"[data] generating {args.n_train} train + {args.n_held} held samples...")
         train_samples = synth_data.generate_samples(args.n_train, CFG, rng)
         held_samples = synth_data.generate_samples(args.n_held, CFG, rng)
     stats = params.compute_stats(train_samples, CFG)
-    X, OUT = synth_data.build_tensors(train_samples, stats, CFG, rng)
-    print(f"[data] X={X.shape} OUT={OUT.shape}  "
+    X, OUT, COND = synth_data.build_tensors(train_samples, stats, CFG, rng)
+    print(f"[data] X={X.shape} OUT={OUT.shape} COND={COND.shape}  "
           f"channel stds (should be ~1 for present rooms): "
           f"{X[X[...,0]>0][:,1:7].std(0).round(2)}")
 
     Xt = torch.from_numpy(X).to(dev)
     Ot = torch.from_numpy(OUT).to(dev)
+    Ct = torch.from_numpy(COND).to(dev)
 
     model = OutlineFlow(CFG).to(dev)
     print(f"[model] OutlineFlow d_model={CFG.d_model} L={CFG.n_layers} "
@@ -103,7 +140,9 @@ def main():
         for g in opt.param_groups:
             g["lr"] = lr_at(step, CFG)
         idx = torch.randint(0, N, (CFG.batch_size,), device=dev)
-        loss = fm_loss(model, Xt[idx], Ot[idx], CFG)
+        cond = Ct[idx] if Ct.shape[1] > 0 else None
+        loss_fn = edm_loss if CFG.objective == "edm" else fm_loss
+        loss = loss_fn(model, Xt[idx], Ot[idx], CFG, cond=cond, cfg_drop=args.cfg_drop)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), CFG.grad_clip)

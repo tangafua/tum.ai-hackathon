@@ -92,14 +92,18 @@ def generate_samples(n: int, cfg, rng=None):
 
 
 def build_tensors(samples, stats, cfg, rng=None):
-    """samples -> stacked arrays X [N,n_max,D], OUT [N,P,4] for training."""
+    """samples -> stacked arrays X [N,n_max,D], OUT [N,P,4], COND [N,n_cond]."""
     rng = rng or np.random.default_rng(cfg.seed + 1)
+    n_cond = getattr(cfg, "n_cond", 0)
     X = np.zeros((len(samples), cfg.n_max, cfg.d), dtype=np.float32)
     OUT = np.zeros((len(samples), cfg.p_outline, 4), dtype=np.float32)
+    COND = np.zeros((len(samples), n_cond), dtype=np.float32)
     for i, s in enumerate(samples):
         X[i] = params.build_x1(s["rooms"], s["outline"], stats, cfg, rng)
         OUT[i] = params.sample_outline_points(s["outline"], cfg.p_outline)
-    return X, OUT
+        if n_cond:
+            COND[i] = params.outline_cond(s["outline"], cfg)
+    return X, OUT, COND
 
 
 if __name__ == "__main__":
@@ -109,6 +113,6 @@ if __name__ == "__main__":
     print(f"generated {len(s)} samples; room counts:", [len(x['rooms']) for x in s])
     st = params.compute_stats(s, CFG)
     print("stats mean:", st[0], "std:", st[1])
-    X, OUT = build_tensors(s, st, CFG, rng)
-    print("X", X.shape, "OUT", OUT.shape, "presence>0 per plan:",
+    X, OUT, COND = build_tensors(s, st, CFG, rng)
+    print("X", X.shape, "OUT", OUT.shape, "COND", COND.shape, "presence>0 per plan:",
           (X[..., 0] > 0).sum(axis=1))

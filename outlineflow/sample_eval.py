@@ -16,7 +16,7 @@ import params
 import metrics
 from cfg import CFG, seed_everything
 from model import OutlineFlow
-from flow import EMA, sample
+from flow import EMA, sample, edm_sample
 from postprocess import layout_from_tokens, voronoi_layout, coverage_overlap
 from render import render_plan
 
@@ -24,7 +24,12 @@ from render import render_plan
 def load(ckpt_path):
     ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     for k in ("n_max", "k", "n_gen_classes", "p_outline", "d_model", "n_layers",
-              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac"):
+              "n_heads", "mlp_ratio", "canvas", "nearest_k", "min_area_frac",
+              # architecture-defining keys: must match the trained variant or
+              # state_dict load fails (cross-attn layers / cond_embed / fourier W shape)
+              "use_cross_attn", "n_cond", "outline_fourier_freqs",
+              # objective/sampler keys (EDM uses a different sampler + sigma schedule)
+              "objective", "sigma_data", "edm_sigma_min", "edm_sigma_max", "edm_rho"):
         if k in ck["cfg"]:
             setattr(CFG, k, ck["cfg"][k])
     model = OutlineFlow(CFG)
@@ -50,7 +55,20 @@ def main():
     ap.add_argument("--decoder", choices=["voronoi", "rect"], default=CFG.decoder,
                     help="rect: axis-aligned rectangles (matches real MSD, default); "
                          "voronoi: gap-free seed-partition tiling (non-rectangular)")
+    ap.add_argument("--guidance", type=float, default=1.0,
+                    help="classifier-free guidance scale (1.0 = off; ~1.5 sharpens "
+                         "outline adherence; needs a model trained with --cfg_drop)")
     ap.add_argument("--seed", type=int, default=CFG.seed)
+    ap.add_argument("--sample_steps", type=int, default=None,
+                    help="M2: ODE integration steps (default cfg 100); more = lower "
+                         "discretization error")
+    ap.add_argument("--full_heun", action="store_true",
+                    help="M2: 2nd-order Heun corrector on EVERY step (not just last 5)")
+    ap.add_argument("--count_match", action="store_true",
+                    help="C1: per-outline rank-based top-K decode. K_i scales the real "
+                         "mean count by each outline's area (K_i=round(mean*area_i/mean_area)), "
+                         "replacing the single global presence threshold -> fixes the "
+                         "under-separation clamp + recovers per-plan count variance")
     ap.set_defaults(calibrate=True)
     args = ap.parse_args()
     decode = voronoi_layout if args.decoder == "voronoi" else layout_from_tokens
@@ -73,12 +91,28 @@ def main():
     # condition tensors
     OUT = np.stack([params.sample_outline_points(o, CFG.p_outline) for o in outlines])
     Ot = torch.from_numpy(OUT).to(dev)
+    n_cond = getattr(CFG, "n_cond", 0)
+    Ct = None
+    if n_cond:
+        COND = np.stack([params.outline_cond(o, CFG) for o in outlines])
+        Ct = torch.from_numpy(COND).to(dev)
 
     # 1) sample all raw token tensors
+    steps = args.sample_steps or CFG.sample_steps
+    heun_last = steps if args.full_heun else 5
+    is_edm = getattr(CFG, "objective", "rectflow") == "edm"
+    print(f"[sample] objective={getattr(CFG,'objective','rectflow')} steps={steps} "
+          f"heun_last={heun_last} guidance={args.guidance}")
     raw = []
     for i in range(0, len(outlines), args.batch):
-        xb = sample(model, Ot[i:i + args.batch], CFG).cpu().numpy()
-        raw.extend(list(xb))
+        cb = Ct[i:i + args.batch] if Ct is not None else None
+        ob = Ot[i:i + args.batch]
+        if is_edm:
+            xb = edm_sample(model, ob, CFG, steps=steps, cond=cb, guidance=args.guidance)
+        else:
+            xb = sample(model, ob, CFG, cond=cb, steps=steps,
+                        heun_last=heun_last, guidance=args.guidance)
+        raw.extend(list(xb.cpu().numpy()))
 
     real_plans = [(s["room_polys"], s["outline"]) for s in held]
 
@@ -87,8 +121,20 @@ def main():
     #    count (not raw present-slots), so it accounts for rooms the rect decoder
     #    drops in overlap-resolve / sliver-drop.  Decoder-agnostic; per-outline
     #    variation is preserved (bigger outlines fire more slots).
+    # C1: per-outline top-K from outline area (leak-free: uses only the real MEAN
+    # count -- already used by --calibrate -- scaled by each outline's own area).
+    topk_list = None
+    if args.count_match:
+        target = float(np.mean([len(r) for r, _ in real_plans]))
+        areas = np.array([float(o.area) for o in outlines])
+        ks = np.round(target * areas / areas.mean()).astype(int)
+        ks = np.clip(ks, 1, CFG.n_max)
+        topk_list = ks
+        print(f"[count_match] target mean {target:.1f} -> per-outline K "
+              f"mean {ks.mean():.2f}±{ks.std():.2f} (range {ks.min()}-{ks.max()})")
+
     thresh = 0.0
-    if args.calibrate:
+    if args.calibrate and not args.count_match:
         target = float(np.mean([len(r) for r, _ in real_plans]))
         sub = list(zip(raw, outlines))[:min(40, len(raw))]
 
@@ -105,6 +151,13 @@ def main():
             else:
                 hi = mid
         thresh = 0.5 * (lo + hi)
+        # hard floor: never drop below the padding baseline, else noise slots get
+        # admitted as rooms and gap-fill masks the collapse (the -1.031 pathology).
+        floor = CFG.presence_thresh_floor
+        if thresh < floor:
+            print(f"[calib] calibrated thresh {thresh:.3f} below floor {floor:.2f} "
+                  f"-> clamped (model under-separates presence)")
+            thresh = floor
         print(f"[calib] target count {target:.1f} -> presence_thresh {thresh:.3f} "
               f"(decoded ~{mean_count(thresh):.1f} on subsample)")
 

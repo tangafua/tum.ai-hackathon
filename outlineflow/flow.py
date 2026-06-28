@@ -29,25 +29,44 @@ def make_weight(x1, cfg):
     return W
 
 
-def fm_loss(model, x1, outline, cfg):
+def fm_loss(model, x1, outline, cfg, cond=None, cfg_drop=0.0):
     B = x1.shape[0]
-    t = torch.rand(B, device=x1.device)                     # per-SAMPLE scalar
+    if getattr(cfg, "t_dist", "uniform") == "logitnormal":
+        # SD3-style: emphasize mid timesteps (t=sigmoid(m+s*z)) -> better FM training
+        m = getattr(cfg, "t_logit_mean", 0.0)
+        s = getattr(cfg, "t_logit_std", 1.0)
+        t = torch.sigmoid(m + s * torch.randn(B, device=x1.device))
+    else:
+        t = torch.rand(B, device=x1.device)                 # per-SAMPLE scalar
     x0 = torch.randn_like(x1)
     xt = (1 - t)[:, None, None] * x0 + t[:, None, None] * x1
     v_target = x1 - x0
-    v_pred = model(xt, t, outline)
+    if cfg_drop > 0.0:                                       # classifier-free guidance
+        # drop the WHOLE outline condition (boundary + scale) for a random subset, so
+        # the model also learns an unconditional field usable at guided sampling.
+        keep = (torch.rand(B, device=x1.device) >= cfg_drop).float()[:, None, None]
+        outline = outline * keep
+        if cond is not None:
+            cond = cond * keep[:, :, 0]
+    v_pred = model(xt, t, outline, cond)
     W = make_weight(x1, cfg)
     return (W * (v_pred - v_target) ** 2).mean()
 
 
 @torch.no_grad()
-def sample(model, outline, cfg, steps=None, heun_last=5, generator=None):
+def sample(model, outline, cfg, steps=None, heun_last=5, generator=None,
+           cond=None, guidance=1.0):
     """Integrate the velocity field from noise (t=0) to data (t=1).
 
     Pass ``generator`` (a torch.Generator) to make the initial noise -- and hence
     the whole sample -- reproducible INDEPENDENTLY of how much global RNG model
     construction / caching consumed.  generate() uses this so identical
     (outline, seed) always yields identical room polygons (brief: fixed seed 42).
+
+    ``cond`` is the global outline-scale conditioning (room-count control).
+    ``guidance`` > 1 applies classifier-free guidance: v = v_uncond + g*(v_cond-v_uncond),
+    pushing samples to follow the outline more strongly (needs a model trained with
+    cfg_drop > 0).
     """
     steps = steps or cfg.sample_steps
     B = outline.shape[0]
@@ -58,16 +77,102 @@ def sample(model, outline, cfg, steps=None, heun_last=5, generator=None):
                         device=generator.device).to(dev)
     else:
         x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
+
+    null_outline = torch.zeros_like(outline)
+    null_cond = None if cond is None else torch.zeros_like(cond)
+
+    def vel(xc, tc):
+        if guidance is not None and guidance != 1.0:
+            v_c = model(xc, tc, outline, cond)
+            v_u = model(xc, tc, null_outline, null_cond)
+            return v_u + guidance * (v_c - v_u)
+        return model(xc, tc, outline, cond)
+
     dt = 1.0 / steps
     for i in range(steps):
         t = torch.full((B,), i * dt, device=dev)
-        v = model(x, t, outline)
+        v = vel(x, t)
         if i >= steps - heun_last:                           # Heun corrector near t=1
             t2 = torch.full((B,), min((i + 1) * dt, 1.0), device=dev)
-            v2 = model(x + v * dt, t2, outline)
+            v2 = vel(x + v * dt, t2)
             x = x + 0.5 * (v + v2) * dt
         else:
             x = x + v * dt
+    return x
+
+
+# ----------------------------------------------------------------------------
+# M4: EDM (Karras et al. 2022) -- preconditioned denoiser objective + Heun sampler.
+# Same network F = model(xt, t, outline, cond); EDM wraps it as a denoiser
+# D(x;sigma) = c_skip*x + c_out*F(c_in*x; c_noise), trained to predict clean data.
+# ----------------------------------------------------------------------------
+
+def edm_denoise(model, x, sigma, outline, cfg, cond=None):
+    """D(x;sigma) with EDM preconditioning. sigma: [B]."""
+    sd = cfg.sigma_data
+    s2 = sigma ** 2
+    c_skip = (sd ** 2 / (s2 + sd ** 2))[:, None, None]
+    c_out = (sigma * sd / (s2 + sd ** 2).sqrt())[:, None, None]
+    c_in = (1.0 / (s2 + sd ** 2).sqrt())[:, None, None]
+    c_noise = 0.25 * sigma.log()                             # [B]; the network's "t" input
+    F = model(c_in * x, c_noise, outline, cond)
+    return c_skip * x + c_out * F
+
+
+def edm_loss(model, x1, outline, cfg, cond=None, cfg_drop=0.0):
+    B = x1.shape[0]
+    ln_sigma = cfg.edm_p_mean + cfg.edm_p_std * torch.randn(B, device=x1.device)
+    sigma = ln_sigma.exp()                                   # [B]
+    x = x1 + sigma[:, None, None] * torch.randn_like(x1)
+    if cfg_drop > 0.0:
+        keep = (torch.rand(B, device=x1.device) >= cfg_drop).float()[:, None, None]
+        outline = outline * keep
+        if cond is not None:
+            cond = cond * keep[:, :, 0]
+    D = edm_denoise(model, x, sigma, outline, cfg, cond)
+    W = make_weight(x1, cfg)
+    lam = ((sigma ** 2 + cfg.sigma_data ** 2) / (sigma * cfg.sigma_data) ** 2)
+    return (lam[:, None, None] * W * (D - x1) ** 2).mean()
+
+
+@torch.no_grad()
+def edm_sample(model, outline, cfg, steps=None, cond=None, guidance=1.0, generator=None):
+    """EDM Heun sampler: integrate sigma_max -> 0 on the Karras rho-schedule."""
+    steps = steps or cfg.sample_steps
+    B = outline.shape[0]
+    dev = outline.device
+    s_min, s_max, rho = cfg.edm_sigma_min, cfg.edm_sigma_max, cfg.edm_rho
+    i = torch.arange(steps, device=dev, dtype=torch.float32)
+    sig = (s_max ** (1 / rho) + i / (steps - 1) *
+           (s_min ** (1 / rho) - s_max ** (1 / rho))) ** rho
+    sig = torch.cat([sig, torch.zeros(1, device=dev)])       # append sigma=0
+    if generator is not None:
+        x = torch.randn(B, cfg.n_max, cfg.d, generator=generator,
+                        device=generator.device).to(dev)
+    else:
+        x = torch.randn(B, cfg.n_max, cfg.d, device=dev)
+    x = x * sig[0]
+    null_outline = torch.zeros_like(outline)
+    null_cond = None if cond is None else torch.zeros_like(cond)
+
+    def denoise(xc, sigma_scalar):
+        sb = torch.full((B,), float(sigma_scalar), device=dev)
+        if guidance is not None and guidance != 1.0:
+            d_c = edm_denoise(model, xc, sb, outline, cfg, cond)
+            d_u = edm_denoise(model, xc, sb, null_outline, cfg, null_cond)
+            return d_u + guidance * (d_c - d_u)
+        return edm_denoise(model, xc, sb, outline, cfg, cond)
+
+    for j in range(steps):
+        s_cur, s_next = sig[j], sig[j + 1]
+        D = denoise(x, s_cur)
+        d = (x - D) / s_cur
+        x_next = x + (s_next - s_cur) * d
+        if s_next > 0:                                       # Heun 2nd-order correction
+            D2 = denoise(x_next, s_next)
+            d2 = (x_next - D2) / s_next
+            x_next = x + (s_next - s_cur) * 0.5 * (d + d2)
+        x = x_next
     return x
 
 

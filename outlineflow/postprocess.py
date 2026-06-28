@@ -57,9 +57,12 @@ def _clean(geom):
 
 
 def layout_from_tokens(x1_np, outline, stats, cfg, presence_thresh=0.0,
-                       theta_snap=None):
+                       theta_snap=None, top_k=None):
     dec = params.decode_x1(x1_np, outline, stats, cfg)      # sorted presence desc
-    present = [d for d in dec if d["presence"] > presence_thresh] or dec[:1]
+    if top_k is not None:                                   # C1: per-outline rank-based
+        present = dec[:max(1, int(top_k))]                  # admit exactly top-K slots
+    else:
+        present = [d for d in dec if d["presence"] > presence_thresh] or dec[:1]
 
     # axis-align rooms to the building (real apartments are rectilinear)
     snap = cfg.theta_snap if theta_snap is None else theta_snap
@@ -96,12 +99,17 @@ def layout_from_tokens(x1_np, outline, stats, cfg, presence_thresh=0.0,
     if not resolved:
         return [(outline, present[0]["type"])]
 
-    # 6. mandatory gap-fill
+    # 6. capped gap-fill: merge each leftover patch into its nearest room, BUT skip
+    #    patches larger than gap_fill_max_frac of the outline -- merging a huge patch
+    #    creates an off-manifold giant room (the green-blob failure) that tanks
+    #    Density/FID.  A skipped patch stays uncovered (renders as wall/black), which
+    #    is far closer to a real plan than a fake mega-room.
+    max_fill = cfg.gap_fill_max_frac * outline.area
     leftover = _clean(outline.difference(unary_union([r[0] for r in resolved])))
     if not leftover.is_empty and leftover.area > 1e-9:
         comps = list(leftover.geoms) if leftover.geom_type == "MultiPolygon" else [leftover]
         for comp in comps:
-            if comp.is_empty or comp.area <= 0:
+            if comp.is_empty or comp.area <= 0 or comp.area > max_fill:
                 continue
             j = min(range(len(resolved)), key=lambda i: resolved[i][0].distance(comp))
             resolved[j][0] = _clean(unary_union([resolved[j][0], comp]))
@@ -109,7 +117,7 @@ def layout_from_tokens(x1_np, outline, stats, cfg, presence_thresh=0.0,
     return [(r[0], int(r[1])) for r in resolved]
 
 
-def voronoi_layout(x1_np, outline, stats, cfg, presence_thresh=0.0):
+def voronoi_layout(x1_np, outline, stats, cfg, presence_thresh=0.0, top_k=None):
     """Decode rooms as a Voronoi partition of the outline around predicted seeds.
 
     Uses the model's predicted room CENTROIDS + TYPES + COUNT and ignores w/h/theta.
@@ -118,7 +126,10 @@ def voronoi_layout(x1_np, outline, stats, cfg, presence_thresh=0.0):
     sidesteps the "rooms don't fill the space" failure of raw boxes.
     """
     dec = params.decode_x1(x1_np, outline, stats, cfg)
-    present = [d for d in dec if d["presence"] > presence_thresh] or dec[:1]
+    if top_k is not None:
+        present = dec[:max(1, int(top_k))]
+    else:
+        present = [d for d in dec if d["presence"] > presence_thresh] or dec[:1]
 
     # dedupe near-coincident seeds (Voronoi needs distinct points)
     seeds = []

@@ -1,0 +1,14 @@
+# Environments
+rocm-venv/
+venv/
+.venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Model checkpoints & experiment outputs
+*.pt
+outlineflow/exp_*/
+outlineflow/outputs_unit/
+outlineflow/outputs/

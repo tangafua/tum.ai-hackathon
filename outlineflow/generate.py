@@ -73,7 +73,7 @@ def load_model(ckpt_path: str = DEFAULT_CKPT, device: str | None = None):
 
 def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
              presence_thresh: float = 0.0, seed: int = 42,
-             device: str | None = None):
+             guidance: float = 1.0, device: str | None = None):
     """Generate the interior rooms for one apartment ``outline``.
 
     Parameters
@@ -99,10 +99,17 @@ def generate(outline, *, ckpt: str = DEFAULT_CKPT, decoder: str | None = None,
 
     OUT = params.sample_outline_points(outline, CFG.p_outline)[None]   # [1,P,4]
     Ot = torch.from_numpy(OUT).to(device)
+    Ct = None
+    if getattr(CFG, "n_cond", 0):
+        Ct = torch.from_numpy(params.outline_cond(outline, CFG)[None]).to(device)
     # dedicated CPU generator so identical (outline, seed) -> identical rooms,
     # independent of the load_model cache / global-RNG consumption (brief: seed 42).
     gen = torch.Generator().manual_seed(int(seed))
-    x = sample(model, Ot, CFG, generator=gen)[0].cpu().numpy()         # [n_max,D]
+    x = sample(model, Ot, CFG, generator=gen, cond=Ct,
+               guidance=guidance)[0].cpu().numpy()                     # [n_max,D]
+    # clamp to the same presence floor as eval so noise/padding slots are never
+    # admitted as rooms (consistent with sample_eval's calibrated threshold floor).
+    presence_thresh = max(presence_thresh, CFG.presence_thresh_floor)
     rooms = decode(x, outline, stats, CFG, presence_thresh=presence_thresh)
     return [(poly, int(t)) for poly, t in rooms]
 

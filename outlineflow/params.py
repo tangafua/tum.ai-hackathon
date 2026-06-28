@@ -151,7 +151,10 @@ def build_x1(rooms, outline, stats, cfg, rng=None) -> np.ndarray:
     mean, std = stats[0], stats[1]
     D = cfg.d
     x1 = np.zeros((cfg.n_max, D), dtype=np.float32)
-    x1[:, 0] = -1.0  # all padding by default
+    x1[:, 0] = -1.0          # presence: all padding by default
+    x1[:, 7:7 + cfg.k] = -1.0  # type: all-cold {-1} baseline for EVERY slot, so padding
+                               # slots carry the same {-1,+1} encoding as real ones
+                               # (geometry of padding stays 0 = standardized mean).
     n = min(len(rooms), cfg.n_max)
     slots = rng.permutation(cfg.n_max)[:n]
     for slot, (cx, cy, w, h, theta, t) in zip(slots, rooms[:n]):
@@ -161,9 +164,20 @@ def build_x1(rooms, outline, stats, cfg, rng=None) -> np.ndarray:
         x1[slot, 1:5] = gn
         x1[slot, 5] = np.sin(2.0 * theta)
         x1[slot, 6] = np.cos(2.0 * theta)
-        x1[slot, 7:7 + cfg.k] = -1.0
-        x1[slot, 7 + int(t) % cfg.k] = 1.0
+        x1[slot, 7 + int(t) % cfg.k] = 1.0   # flip the true class to +1 (baseline -1)
     return x1
+
+
+def outline_cond(outline, cfg) -> np.ndarray:
+    """Global scale features of an outline -> [2] = (log-area, log-perimeter), lightly
+    normalized to O(1).  These are the ONLY absolute-scale signals the model gets
+    (boundary points are normalized to [-1,1], so size is otherwise invisible).  They
+    let the model condition room COUNT on apartment size -- the main cause of the real
+    count's high variance -- and are identical at train and inference (no mismatch).
+    """
+    area = max(float(outline.area), 1e-6)
+    perim = max(float(outline.length), 1e-6)
+    return np.array([np.log(area) / 5.0, np.log(perim) / 3.0], dtype=np.float32)
 
 
 def decode_x1(x1: np.ndarray, outline, stats, cfg):
